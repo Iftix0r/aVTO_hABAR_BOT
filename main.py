@@ -49,14 +49,24 @@ async def send_auto_message(user_id):
     if not client:
         return
         
-    message = user_data.get('auto_message')
+    message_id = user_data.get('auto_message_id')
+    old_message = user_data.get('auto_message')
     groups = user_data.get('groups', [])
-    if not message or not groups:
+    if not groups or (not message_id and not old_message):
         return
+        
+    bot_id = int(config.BOT_TOKEN.split(':')[0])
+    is_forward = user_data.get('is_forward', False)
         
     for g in groups:
         try:
-            await client.send_message(g, message)
+            if message_id:
+                if is_forward:
+                    await client.forward_messages(chat_id=g, from_chat_id=bot_id, message_ids=message_id)
+                else:
+                    await client.copy_message(chat_id=g, from_chat_id=bot_id, message_id=message_id)
+            else:
+                await client.send_message(g, old_message)
             await asyncio.sleep(1)
         except Exception as e:
             print(f"[{user_id}] Xatolik guruhga yuborishda {g}: {e}")
@@ -81,10 +91,10 @@ async def start_cmd(client, message):
         reply_markup=main_menu()
     )
 
-@bot.on_message(filters.private & filters.text)
+@bot.on_message(filters.private)
 async def message_handler(client, message):
     chat_id = message.chat.id
-    text = message.text
+    text = message.text or ""
 
     if text == "❌ Bekor qilish":
         user_states.pop(chat_id, None)
@@ -96,8 +106,16 @@ async def message_handler(client, message):
     state = state_info.get("state")
 
     if state == "WAITING_PHONE":
-        phone = text.strip()
-        await message.reply_text("Kodni kutmoqdamiz... Iltimos kuting.")
+        if message.contact:
+            phone = message.contact.phone_number
+        else:
+            phone = text.strip()
+            
+        if not phone:
+            await message.reply_text("Iltimos, raqamni kiriting yoki tugma orqali yuboring.")
+            return
+            
+        await message.reply_text("Kodni kutmoqdamiz... Iltimos kuting.", reply_markup=cancel_menu())
         try:
             user_client = Client(f"session_{chat_id}", config.API_ID, config.API_HASH)
             await user_client.connect()
@@ -109,14 +127,14 @@ async def message_handler(client, message):
                 "phone_code_hash": sent_code.phone_code_hash,
                 "client": user_client
             }
-            await message.reply_text("📲 Telegramdan kelgan kodni kiriting:\n(Agar raqamlardan iborat bo'lsa, xato bo'lmasligi uchun orasiga bo'sh joy qo'shib yozing, masalan: 12 34 5)", reply_markup=cancel_menu())
+            await message.reply_text("📲 Telegramdan kelgan kodni kiriting:\n(Agar raqamlardan iborat bo'lsa, xato bo'lmasligi uchun orasiga vergul yoki bo'sh joy qo'shib yozing, masalan: 1,2,3,4,5)", reply_markup=cancel_menu())
         except Exception as e:
             await message.reply_text(f"❌ Xatolik yuz berdi: {e}", reply_markup=main_menu())
             user_states.pop(chat_id, None)
         return
 
     elif state == "WAITING_CODE":
-        code = text.replace(" ", "").strip()
+        code = text.replace(" ", "").replace(",", "").strip()
         state_data = user_states[chat_id]
         user_client = state_data["client"]
         phone = state_data["phone"]
@@ -151,9 +169,10 @@ async def message_handler(client, message):
         return
 
     elif state == "WAITING_AUTO_MESSAGE":
-        update_user(chat_id, auto_message=text)
+        is_forward = True if getattr(message, "forward_date", None) else False
+        update_user(chat_id, auto_message_id=message.id, is_forward=is_forward, auto_message=None)
         user_states.pop(chat_id, None)
-        await message.reply_text("✅ Avto-habar matni saqlandi!", reply_markup=main_menu())
+        await message.reply_text("✅ Reklama xabari saqlandi! (Rasm, video va forwardlar qo'llab-quvvatlanadi)", reply_markup=main_menu())
         return
 
     elif state == "WAITING_INTERVAL":
@@ -172,7 +191,11 @@ async def message_handler(client, message):
             await message.reply_text("✅ Siz allaqachon hisobga kirgansiz.")
             return
         user_states[chat_id] = {"state": "WAITING_PHONE"}
-        await message.reply_text("Telefon raqamingizni xalqaro formatda kiriting (masalan: +998901234567):", reply_markup=cancel_menu())
+        contact_menu = ReplyKeyboardMarkup([
+            [KeyboardButton("📞 Raqamni yuborish", request_contact=True)],
+            [KeyboardButton("❌ Bekor qilish")]
+        ], resize_keyboard=True)
+        await message.reply_text("Telefon raqamingizni xalqaro formatda kiriting (masalan: +998901234567) yoki pastdagi tugmani bosing:", reply_markup=contact_menu)
 
     elif text == "📁 Jild yaratish va guruhlarni qo'shish":
         user_client = await get_or_create_client(chat_id)
@@ -221,8 +244,8 @@ async def message_handler(client, message):
 
     elif text == "▶️ Boshlash":
         user_data = get_user(chat_id)
-        if not user_data.get('auto_message') or not user_data.get('groups'):
-            await message.reply_text("❌ Avto-habar matni kiritilmagan yoki guruhlar topilmadi.")
+        if not user_data.get('groups') or (not user_data.get('auto_message_id') and not user_data.get('auto_message')):
+            await message.reply_text("❌ Avto-habar kiritilmagan yoki guruhlar topilmadi.")
             return
         update_user(chat_id, status="running")
         setup_job(chat_id)
@@ -240,13 +263,16 @@ async def message_handler(client, message):
         status = "Ishlayapti ✅" if user_data.get('status') == 'running' else "To'xtatilgan 🛑"
         groups_count = len(user_data.get('groups', []))
         interval = user_data.get('interval', 60)
-        msg_len = len(user_data.get('auto_message', ''))
+        
+        msg_type = "Matn"
+        if user_data.get('auto_message_id'):
+            msg_type = "Media/Forward (Rasm, Video...)"
         
         await message.reply_text(
             f"📊 **Holat:** {status}\n"
             f"👥 **Guruhlar soni:** {groups_count} ta\n"
             f"⏱ **Interval:** Har {interval} daqiqada\n"
-            f"✉️ **Habar uzunligi:** {msg_len} belgi",
+            f"✉️ **Habar turi:** {msg_type}",
             parse_mode=ParseMode.MARKDOWN
         )
 
