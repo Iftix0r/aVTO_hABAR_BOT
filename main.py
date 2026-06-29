@@ -82,19 +82,19 @@ def setup_job(user_id):
     if user_data.get('status') == 'running':
         scheduler.add_job(send_auto_message, 'interval', minutes=interval_minutes, args=[user_id], id=job_id)
 
-@bot.on_message(filters.command("start") & filters.private)
-async def start_cmd(client, message):
-    user_states.pop(message.chat.id, None)
-    await message.reply_text(
-        "👋 Salom! Avto-habar botiga xush kelibsiz.\n"
-        "Quyidagi menyu orqali botni boshqaring:",
-        reply_markup=main_menu()
-    )
-
 @bot.on_message(filters.private)
 async def message_handler(client, message):
     chat_id = message.chat.id
     text = message.text or ""
+
+    if text == "/start":
+        user_states.pop(chat_id, None)
+        await message.reply_text(
+            "👋 Salom! Avto-habar botiga xush kelibsiz.\n"
+            "Quyidagi menyu orqali botni boshqaring:",
+            reply_markup=main_menu()
+        )
+        return
 
     if text == "❌ Bekor qilish":
         user_states.pop(chat_id, None)
