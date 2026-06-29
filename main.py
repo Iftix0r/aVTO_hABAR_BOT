@@ -10,6 +10,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import config
 from db import update_user, get_user, load_db
 
+# Asinxron tsiklni qo'lda boshqaramiz
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+
 bot = Client("bot_session", api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN)
 scheduler = AsyncIOScheduler()
 
@@ -285,7 +289,6 @@ def startup_jobs():
 
 if __name__ == "__main__":
     import pyrogram
-    import asyncio
     
     async def main_loop():
         await bot.start()
@@ -296,4 +299,4 @@ if __name__ == "__main__":
         await bot.stop()
         
     print("Bot is starting...")
-    asyncio.run(main_loop())
+    loop.run_until_complete(main_loop())
