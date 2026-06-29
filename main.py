@@ -284,7 +284,12 @@ def startup_jobs():
             setup_job(int(user_id_str))
 
 if __name__ == "__main__":
+    from pyrogram import idle
+    
+    async def main_loop():
+        scheduler.start()
+        startup_jobs()
+        await idle()
+        
     print("Bot is starting...")
-    startup_jobs()
-    scheduler.start()
-    bot.run()
+    bot.run(main_loop())
