@@ -284,12 +284,16 @@ def startup_jobs():
             setup_job(int(user_id_str))
 
 if __name__ == "__main__":
-    from pyrogram import idle
+    import pyrogram
+    import asyncio
     
     async def main_loop():
+        await bot.start()
+        print(f"Bot @{(await bot.get_me()).username} sifatida ishga tushdi!")
         scheduler.start()
         startup_jobs()
-        await idle()
+        await pyrogram.idle()
+        await bot.stop()
         
     print("Bot is starting...")
-    bot.run(main_loop())
+    asyncio.run(main_loop())
