@@ -319,10 +319,14 @@ async def message_handler(client, message):
 
         msg = await message.reply_text("⏳ Guruhlar izlanmoqda...")
         groups = []
+        count = 0
         try:
             async for d in user_client.get_dialogs():
+                count += 1
                 if str(d.chat.type) in ["ChatType.GROUP", "ChatType.SUPERGROUP"]:
                     groups.append(d.chat.id)
+                if count % 50 == 0:
+                    await msg.edit_text(f"⏳ {count} ta dialog tekshirildi, {len(groups)} ta guruh topildi...")
         except Exception as e:
             await msg.edit_text(f"❌ Dialoglarni olishda xatolik: {e}")
             return
@@ -331,12 +335,16 @@ async def message_handler(client, message):
             await msg.edit_text("❌ Sizda hech qanday guruh topilmadi.")
             return
 
-        peers = []
-        for g in groups:
+        await msg.edit_text(f"⏳ {len(groups)} ta guruh topildi, jildga qo'shilmoqda...")
+
+        async def resolve(g):
             try:
-                peers.append(await user_client.resolve_peer(g))
+                return await user_client.resolve_peer(g)
             except Exception:
-                pass
+                return None
+
+        results = await asyncio.gather(*[resolve(g) for g in groups])
+        peers = [p for p in results if p is not None]
 
         try:
             filter_folder = DialogFilter(
@@ -464,10 +472,19 @@ async def callback_handler(client, callback_query):
             return
         await callback_query.answer("⏳ Yangilanmoqda...")
         groups = []
+        count = 0
         try:
             async for d in user_client.get_dialogs():
+                count += 1
                 if str(d.chat.type) in ["ChatType.GROUP", "ChatType.SUPERGROUP"]:
                     groups.append(d.chat.id)
+                if count % 50 == 0:
+                    try:
+                        await callback_query.message.edit_text(
+                            f"⏳ {count} ta dialog tekshirildi, {len(groups)} ta guruh topildi..."
+                        )
+                    except Exception:
+                        pass
         except Exception as e:
             await callback_query.answer(f"❌ Xatolik: {e}", show_alert=True)
             return
@@ -476,12 +493,15 @@ async def callback_handler(client, callback_query):
             await callback_query.answer("❌ Guruh topilmadi!", show_alert=True)
             return
 
-        peers = []
-        for g in groups:
+        async def resolve(g):
             try:
-                peers.append(await user_client.resolve_peer(g))
+                return await user_client.resolve_peer(g)
             except Exception:
-                pass
+                return None
+
+        results = await asyncio.gather(*[resolve(g) for g in groups])
+        peers = [p for p in results if p is not None]
+
         try:
             filter_folder = DialogFilter(
                 id=10, title="Avto Habar Guruhlar",
