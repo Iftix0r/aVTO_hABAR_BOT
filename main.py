@@ -217,35 +217,39 @@ async def send_messages(uid):
     text = d.get("auto_message") or ""
     has_media = d.get("has_media", False)
     file_id = d.get("media_file_id")
+    file_path = d.get("media_file_path")
     media_type = d.get("media_type", "")
 
     if not groups:
         print(f"[{uid}] guruh yo'q")
         return
-    if not text and not file_id:
+    if not text and not file_id and not file_path:
         print(f"[{uid}] xabar yo'q")
         return
+
+    # Yuborish uchun ishlatadigan media manba
+    media_src = file_path if (file_path and os.path.exists(str(file_path))) else file_id
 
     print(f"[{uid}] yuborish: {len(groups)} guruh, media={has_media}, type={media_type}")
     ok = fail = 0
     errors = []
     for g in groups:
         try:
-            if has_media and file_id:
+            if has_media and media_src:
                 if "PHOTO" in media_type.upper():
-                    await client.send_photo(g, file_id, caption=text or None)
+                    await client.send_photo(g, media_src, caption=text or None)
                 elif "VIDEO" in media_type.upper():
-                    await client.send_video(g, file_id, caption=text or None)
+                    await client.send_video(g, media_src, caption=text or None)
                 elif "AUDIO" in media_type.upper():
-                    await client.send_audio(g, file_id, caption=text or None)
+                    await client.send_audio(g, media_src, caption=text or None)
                 elif "VOICE" in media_type.upper():
-                    await client.send_voice(g, file_id, caption=text or None)
+                    await client.send_voice(g, media_src, caption=text or None)
                 elif "STICKER" in media_type.upper():
-                    await client.send_sticker(g, file_id)
+                    await client.send_sticker(g, media_src)
                 elif "ANIMATION" in media_type.upper():
-                    await client.send_animation(g, file_id, caption=text or None)
+                    await client.send_animation(g, media_src, caption=text or None)
                 else:
-                    await client.send_document(g, file_id, caption=text or None)
+                    await client.send_document(g, media_src, caption=text or None)
             elif text:
                 await client.send_message(g, text)
             ok += 1
@@ -362,18 +366,25 @@ async def on_message(client, message):
         msg_text = message.text or message.caption or ""
 
         if has_media:
-            # Media faylni bot serverida saqlash uchun file_id olamiz
+            # Faylni bot orqali yuklab olamiz
+            try:
+                file_path = await bot.download_media(message, file_name=f"media_{uid}")
+            except Exception as e:
+                file_path = None
+                print(f"[{uid}] media yuklab olishda xato: {e}")
             media = (message.photo or message.video or message.document or
                      message.audio or message.voice or message.sticker or
                      message.animation)
             file_id = getattr(media, "file_id", None)
             update_user(uid, auto_message_id=message.id, auto_message=msg_text,
-                        has_media=True, is_forward=is_fwd, media_file_id=file_id,
+                        has_media=True, is_forward=is_fwd,
+                        media_file_id=file_id,
+                        media_file_path=file_path,
                         media_type=str(message.media))
         else:
             update_user(uid, auto_message_id=None, auto_message=msg_text,
-                        has_media=False, is_forward=False, media_file_id=None,
-                        media_type=None)
+                        has_media=False, is_forward=False,
+                        media_file_id=None, media_file_path=None, media_type=None)
 
         user_states.pop(uid, None)
         mtype = "Media" if has_media else "Matn"
