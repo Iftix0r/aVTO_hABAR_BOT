@@ -1,5 +1,6 @@
 import asyncio
 import os
+import pyrogram.raw.functions.messages
 from pyrogram import Client, filters
 from pyrogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
@@ -117,35 +118,91 @@ async def get_or_create_client(user_id):
     return None
 
 async def fetch_groups(user_client):
-    """(id, name) juftliklari ro'yxatini qaytaradi"""
+    """(id, name) juftliklari ro'yxatini qaytaradi — tez usul"""
     groups = []
-    async for d in user_client.get_dialogs():
-        if str(d.chat.type) in ["ChatType.GROUP", "ChatType.SUPERGROUP"]:
-            groups.append((d.chat.id, d.chat.title or str(d.chat.id)))
+    offset_date = 0
+    offset_id = 0
+    offset_peer = await user_client.resolve_peer("me")
+
+    while True:
+        r = await user_client.invoke(
+            pyrogram.raw.functions.messages.GetDialogs(
+                offset_date=offset_date,
+                offset_id=offset_id,
+                offset_peer=offset_peer,
+                limit=100,
+                hash=0
+            )
+        )
+        if not hasattr(r, "dialogs") or not r.dialogs:
+            break
+
+        chats = {c.id: c for c in r.chats}
+        for d in r.dialogs:
+            peer = d.peer
+            if hasattr(peer, "chat_id"):
+                cid = peer.chat_id
+                chat = chats.get(cid)
+                if chat and not getattr(chat, "deactivated", False) and not getattr(chat, "left", False):
+                    groups.append((-cid, getattr(chat, "title", str(cid))))
+            elif hasattr(peer, "channel_id"):
+                cid = peer.channel_id
+                chat = chats.get(cid)
+                if chat and getattr(chat, "megagroup", False) and not getattr(chat, "left", False):
+                    groups.append((-cid, getattr(chat, "title", str(cid))))
+
+        if len(r.dialogs) < 100:
+            break
+
+        last = r.messages[-1] if r.messages else None
+        if last:
+            offset_date = last.date
+            offset_id = last.id
+            last_peer = r.dialogs[-1].peer
+            try:
+                if hasattr(last_peer, "channel_id"):
+                    offset_peer = await user_client.resolve_peer(-last_peer.channel_id)
+                elif hasattr(last_peer, "chat_id"):
+                    offset_peer = await user_client.resolve_peer(-last_peer.chat_id)
+                elif hasattr(last_peer, "user_id"):
+                    offset_peer = await user_client.resolve_peer(last_peer.user_id)
+            except Exception:
+                pass
+        else:
+            break
+
     return groups
 
 async def save_folder(user_client, group_ids):
-    """Tanlangan guruhlarni jildga saqlaydi"""
-    limited = group_ids[:MAX_FOLDER_PEERS]
-
+    """Tanlangan guruhlarni jildga saqlaydi, xavfsiz limit bilan"""
     async def resolve(g):
         try:
             return await user_client.resolve_peer(g)
         except Exception:
             return None
 
-    results = await asyncio.gather(*[resolve(g) for g in limited])
+    results = await asyncio.gather(*[resolve(g) for g in group_ids])
     peers = [p for p in results if p is not None]
 
-    filter_folder = DialogFilter(
-        id=10,
-        title="Avto Habar Guruhlar",
-        pinned_peers=[],
-        include_peers=peers,
-        exclude_peers=[]
-    )
-    await user_client.invoke(UpdateDialogFilter(id=10, filter=filter_folder))
-    return len(peers)
+    # Ishlaydigon maksimal sonni topamiz (ikkilik qidiruv)
+    lo, hi = 1, len(peers)
+    last_ok = 0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        try:
+            await user_client.invoke(UpdateDialogFilter(
+                id=10,
+                filter=DialogFilter(
+                    id=10, title="Avto Habar Guruhlar",
+                    pinned_peers=[], include_peers=peers[:mid], exclude_peers=[]
+                )
+            ))
+            last_ok = mid
+            lo = mid + 1
+        except Exception:
+            hi = mid - 1
+
+    return last_ok
 
 async def send_auto_message(user_id):
     user_data = get_user(user_id)
