@@ -208,16 +208,25 @@ async def send_auto_message(user_id):
 
     client = await get_or_create_client(user_id)
     if not client:
+        print(f"[{user_id}] Client topilmadi, xabar yuborilmadi")
         return
 
     message_id = user_data.get("auto_message_id")
     old_message = user_data.get("auto_message")
     groups = user_data.get("groups", [])
-    if not groups or (not message_id and not old_message):
+
+    print(f"[{user_id}] Yuborish boshlandi: {len(groups)} ta guruh, message_id={message_id}")
+
+    if not groups:
+        print(f"[{user_id}] Guruhlar bo'sh!")
+        return
+    if not message_id and not old_message:
+        print(f"[{user_id}] Xabar yo'q!")
         return
 
     bot_id = int(config.BOT_TOKEN.split(":")[0])
     is_forward = user_data.get("is_forward", False)
+    ok, fail = 0, 0
 
     for g in groups:
         try:
@@ -228,9 +237,13 @@ async def send_auto_message(user_id):
                     await client.copy_message(chat_id=g, from_chat_id=bot_id, message_id=message_id)
             else:
                 await client.send_message(g, old_message)
+            ok += 1
             await asyncio.sleep(1)
         except Exception as e:
-            print(f"[{user_id}] Guruhga yuborishda xatolik {g}: {e}")
+            fail += 1
+            print(f"[{user_id}] Xatolik {g}: {e}")
+
+    print(f"[{user_id}] Yuborish tugadi: {ok} muvaffaqiyatli, {fail} xato")
 
 def setup_job(user_id):
     user_data = get_user(user_id)
