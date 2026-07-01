@@ -235,30 +235,35 @@ async def send_messages(uid):
     errors = []
     for g in groups:
         try:
+            # Avval peer ni resolve qilamiz
+            try:
+                peer = await client.resolve_peer(g)
+            except Exception:
+                peer = g
+
             if has_media and media_src:
                 mt = media_type.upper()
-                # Fayl disk da bo'lsa open() bilan, aks holda file_id
                 src = open(media_src, "rb") if (file_path and os.path.exists(str(file_path))) else media_src
                 try:
                     if "PHOTO" in mt:
-                        await client.send_photo(g, src, caption=text or None)
+                        await client.send_photo(peer, src, caption=text or None)
                     elif "VIDEO" in mt:
-                        await client.send_video(g, src, caption=text or None)
+                        await client.send_video(peer, src, caption=text or None)
                     elif "AUDIO" in mt:
-                        await client.send_audio(g, src, caption=text or None)
+                        await client.send_audio(peer, src, caption=text or None)
                     elif "VOICE" in mt:
-                        await client.send_voice(g, src, caption=text or None)
+                        await client.send_voice(peer, src, caption=text or None)
                     elif "STICKER" in mt:
-                        await client.send_sticker(g, src)
+                        await client.send_sticker(peer, src)
                     elif "ANIMATION" in mt or "GIF" in mt:
-                        await client.send_animation(g, src, caption=text or None)
+                        await client.send_animation(peer, src, caption=text or None)
                     else:
-                        await client.send_document(g, src, caption=text or None)
+                        await client.send_document(peer, src, caption=text or None)
                 finally:
                     if hasattr(src, "close"):
                         src.close()
             elif text:
-                await client.send_message(g, text)
+                await client.send_message(peer, text)
             ok += 1
             await asyncio.sleep(1)
         except Exception as e:
