@@ -138,7 +138,7 @@ async def fetch_groups(client):
             elif hasattr(p, "channel_id"):
                 c = chats.get(p.channel_id)
                 if c and getattr(c, "megagroup", False) and not getattr(c, "left", False):
-                    groups.append((-p.channel_id, c.title or str(p.channel_id)))
+                    groups.append((int(f"-100{p.channel_id}"), c.title or str(p.channel_id)))
         if len(r.dialogs) < 100:
             break
         last = r.messages[-1] if r.messages else None
