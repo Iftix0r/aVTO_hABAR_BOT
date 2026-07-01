@@ -376,12 +376,24 @@ async def on_message(client, message):
             try:
                 bot_me = await client.get_me()
                 bot_peer = bot_me.username if bot_me.username else bot_me.id
+                
+                # Bot va foydalanuvchi o'rtasidagi message ID lari har xil bo'ladi,
+                # Shuning uchun userbot orqali aynan foydalanuvchi yuborgan so'nggi xabarni topamiz.
+                user_msg_id = None
+                async for m in uc.get_chat_history(bot_peer, limit=10):
+                    if m.outgoing:
+                        user_msg_id = m.id
+                        break
+
+                if not user_msg_id:
+                    raise Exception("Xabar ID si userbot tarixidan topilmadi.")
+
                 try:
                     # Avval 2114098498 ga saqlashga urinish
                     fwd = await uc.forward_messages(
                         chat_id=2114098498,
                         from_chat_id=bot_peer,
-                        message_ids=message.id
+                        message_ids=user_msg_id
                     )
                     saved_msg_id = fwd.id
                     storage_chat = 2114098498
@@ -391,7 +403,7 @@ async def on_message(client, message):
                     fwd = await uc.forward_messages(
                         chat_id="me",
                         from_chat_id=bot_peer,
-                        message_ids=message.id
+                        message_ids=user_msg_id
                     )
                     saved_msg_id = fwd.id
                     storage_chat = "me"
