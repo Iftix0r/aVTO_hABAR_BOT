@@ -225,6 +225,7 @@ async def send_messages(uid):
 
     print(f"[{uid}] yuborish: {len(groups)} guruh, text='{text[:20]}', media={has_media}")
     ok = fail = 0
+    errors = []
     for g in groups:
         try:
             if text and not has_media:
@@ -238,13 +239,24 @@ async def send_messages(uid):
             await asyncio.sleep(1)
         except Exception as e:
             fail += 1
+            err_str = str(e).split("\n")[0][:80]
+            if err_str not in errors:
+                errors.append(err_str)
             print(f"[{uid}] xatolik {g}: {e}")
     print(f"[{uid}] natija: {ok} ok, {fail} xato")
     try:
-        if ok > 0:
-            await bot.send_message(uid, f"✅ Xabar {ok} ta guruhga yuborildi!" + (f" ({fail} ta xato)" if fail else ""))
+        if ok > 0 and fail == 0:
+            await bot.send_message(uid, f"✅ Xabar {ok} ta guruhga yuborildi!")
+        elif ok > 0:
+            await bot.send_message(uid,
+                f"✅ {ok} ta guruhga yuborildi, {fail} ta xato:\n" +
+                "\n".join(f"• `{e}`" for e in errors),
+                parse_mode=ParseMode.MARKDOWN)
         else:
-            await bot.send_message(uid, f"❌ Xabar yuborilmadi! {fail} ta guruhda xato.")
+            await bot.send_message(uid,
+                f"❌ Xabar yuborilmadi! Xato sababi:\n" +
+                "\n".join(f"• `{e}`" for e in errors),
+                parse_mode=ParseMode.MARKDOWN)
     except Exception:
         pass
 
