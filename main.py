@@ -174,47 +174,32 @@ async def fetch_groups(user_client):
     return groups
 
 async def save_folder(user_client, group_ids):
-    """Tanlangan guruhlarni jildga saqlaydi"""
+    """Jild yaratishga harakat qiladi, xato bo'lsa None qaytaradi"""
     async def resolve(g):
         try:
             return await user_client.resolve_peer(g)
-        except Exception as e:
-            print(f"resolve_peer xatolik {g}: {e}")
+        except Exception:
             return None
 
     results = await asyncio.gather(*[resolve(g) for g in group_ids])
     peers = [p for p in results if p is not None]
-    print(f"[save_folder] group_ids={group_ids[:3]}... peers={peers[:3]}... total peers={len(peers)}")
-
     if not peers:
-        return 0
+        return None
 
-    try:
-        await user_client.invoke(UpdateDialogFilter(
-            id=10,
-            filter=DialogFilter(
-                id=10, title="Avto Habar Guruhlar",
-                pinned_peers=[], include_peers=peers, exclude_peers=[]
-            )
-        ))
-        return len(peers)
-    except Exception as e:
-        print(f"[save_folder] UpdateDialogFilter xatolik: {e}")
-        # 10 tadan kamaytira borib sinab ko'ramiz
-        limit = len(peers) - 10
-        while limit > 0:
-            try:
-                await user_client.invoke(UpdateDialogFilter(
-                    id=10,
-                    filter=DialogFilter(
-                        id=10, title="Avto Habar Guruhlar",
-                        pinned_peers=[], include_peers=peers[:limit], exclude_peers=[]
-                    )
-                ))
-                return limit
-            except Exception:
-                limit -= 10
-        return 0
+    limit = min(len(peers), 100)
+    while limit > 0:
+        try:
+            await user_client.invoke(UpdateDialogFilter(
+                id=10,
+                filter=DialogFilter(
+                    id=10, title="Avto Habar Guruhlar",
+                    pinned_peers=[], include_peers=peers[:limit], exclude_peers=[]
+                )
+            ))
+            return limit
+        except Exception:
+            limit -= 10
+    return None
 
 async def send_auto_message(user_id):
     user_data = get_user(user_id)
@@ -573,22 +558,24 @@ async def callback_handler(client, callback_query):
         user_client = await get_or_create_client(chat_id)
         await callback_query.message.edit_text(f"⏳ {len(selected)} ta guruh jildga qo'shilmoqda...")
         try:
-            saved = await save_folder(user_client, selected)
             update_user(chat_id, groups=selected)
-            if saved == 0:
+            saved = await save_folder(user_client, selected)
+            if saved is None:
                 await callback_query.message.edit_text(
-                    f"✅ {len(selected)} ta guruh bazaga saqlandi!\n"
-                    f"_(Jildga qo'shilmadi — Telegram limiti)_",
+                    f"✅ {len(selected)} ta guruh saqlandi! Xabar yuborish ishlaydi.\n"
+                    f"_(Telegram jild yaratishga ruxsat bermadi — bu normal)_",
                     parse_mode=ParseMode.MARKDOWN
                 )
             elif saved < len(selected):
                 await callback_query.message.edit_text(
-                    f"✅ {len(selected)} ta guruh bazaga saqlandi!\n"
-                    f"_(Jildga {saved} ta qo'shildi, qolganlari xabar yuborishda ishlaydi)_",
+                    f"✅ {len(selected)} ta guruh saqlandi! Xabar yuborish ishlaydi.\n"
+                    f"_(Jildga {saved} ta qo'shildi)_",
                     parse_mode=ParseMode.MARKDOWN
                 )
             else:
-                await callback_query.message.edit_text(f"✅ {len(selected)} ta guruh saqlandi va jildga qo'shildi!")
+                await callback_query.message.edit_text(
+                    f"✅ {len(selected)} ta guruh saqlandi va jildga qo'shildi!"
+                )
         except Exception as e:
             await callback_query.message.edit_text(f"❌ Jild yaratishda xatolik: {e}")
         await callback_query.answer()
