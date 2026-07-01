@@ -2,14 +2,12 @@ import asyncio
 import os
 import pyrogram.raw.functions.messages
 from pyrogram import Client, filters
-from pyrogram.types import (
-    ReplyKeyboardMarkup, KeyboardButton,
-    InlineKeyboardMarkup, InlineKeyboardButton
-)
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import SessionPasswordNeeded, PhoneCodeExpired, PhoneCodeInvalid
 from pyrogram.raw.functions.messages import UpdateDialogFilter
 from pyrogram.raw.types import DialogFilter
 from pyrogram.enums import ParseMode
+from pyrogram.types import ReplyKeyboardMarkup, KeyboardButton
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import config
 from db import update_user, get_user, load_db
@@ -26,172 +24,153 @@ scheduler = AsyncIOScheduler()
 user_clients = {}
 user_states = {}
 
-MAX_FOLDER_PEERS = 100
-PAGE_SIZE = 8  # bir sahifada nechta guruh
+PAGE_SIZE = 8
 
-# ── Menyular ──────────────────────────────────────────────────────────────────
+# ── Inline menyular ───────────────────────────────────────────────────────────
 
-def login_menu():
-    return ReplyKeyboardMarkup([[KeyboardButton("🔐 Hisobga kirish")]], resize_keyboard=True)
-
-def main_menu():
-    return ReplyKeyboardMarkup([
-        [KeyboardButton("📁 Guruhlarni tanlash")],
-        [KeyboardButton("✉️ Avto habar"), KeyboardButton("⏱ Vaqtni sozlash")],
-        [KeyboardButton("📊 Boshqaruv paneli")],
-        [KeyboardButton("🚪 Hisobdan chiqish")]
-    ], resize_keyboard=True)
-
-def cancel_menu():
-    return ReplyKeyboardMarkup([[KeyboardButton("❌ Bekor qilish")]], resize_keyboard=True)
-
-def control_panel_inline(status: str):
-    is_running = status == "running"
+def main_inline(is_logged=True):
+    if not is_logged:
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔐 Hisobga kirish", callback_data="login")
+        ]])
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛑 To'xtatish" if is_running else "▶️ Boshlash",
-                              callback_data="stop" if is_running else "start")],
         [InlineKeyboardButton("📁 Guruhlarni tanlash", callback_data="open_groups")],
-        [InlineKeyboardButton("🗑 Xabarni o'chirish", callback_data="clear_message")],
-        [InlineKeyboardButton("❌ Yopish", callback_data="close_panel")]
+        [InlineKeyboardButton("✉️ Xabar kiritish", callback_data="set_message"),
+         InlineKeyboardButton("⏱ Interval", callback_data="set_interval")],
+        [InlineKeyboardButton("📊 Holat", callback_data="status")],
+        [InlineKeyboardButton("🚪 Chiqish", callback_data="logout_ask")]
     ])
 
-def confirm_logout_inline():
+def status_inline(status):
+    running = status == "running"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛑 To'xtatish" if running else "▶️ Boshlash",
+                              callback_data="stop" if running else "start")],
+        [InlineKeyboardButton("📁 Guruhlarni tanlash", callback_data="open_groups"),
+         InlineKeyboardButton("✉️ Xabar", callback_data="set_message")],
+        [InlineKeyboardButton("⏱ Interval", callback_data="set_interval"),
+         InlineKeyboardButton("🗑 Xabarni o'chir", callback_data="clear_msg")],
+        [InlineKeyboardButton("🔙 Orqaga", callback_data="main_menu")]
+    ])
+
+def confirm_inline(yes_cb, no_cb="main_menu"):
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Ha, chiqish", callback_data="confirm_logout"),
-        InlineKeyboardButton("❌ Bekor", callback_data="close_panel")
+        InlineKeyboardButton("✅ Ha", callback_data=yes_cb),
+        InlineKeyboardButton("❌ Yo'q", callback_data=no_cb)
     ]])
 
-def groups_page_inline(all_groups, selected_ids, page=0):
-    """Guruhlar sahifasi — checkbox ko'rinishida"""
+def cancel_inline():
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_state")
+    ]])
+
+def groups_inline(all_groups, selected, page):
     start = page * PAGE_SIZE
     end = start + PAGE_SIZE
-    page_groups = all_groups[start:end]
-    total_pages = (len(all_groups) + PAGE_SIZE - 1) // PAGE_SIZE
-
+    total_pages = max(1, (len(all_groups) + PAGE_SIZE - 1) // PAGE_SIZE)
     rows = []
-    for gid, gname in page_groups:
-        check = "✅" if gid in selected_ids else "☑️"
-        title = gname[:28] if len(gname) > 28 else gname
-        rows.append([InlineKeyboardButton(f"{check} {title}", callback_data=f"gtoggle_{gid}")])
-
+    for gid, gname in all_groups[start:end]:
+        mark = "✅" if gid in selected else "☑️"
+        rows.append([InlineKeyboardButton(
+            f"{mark} {gname[:30]}", callback_data=f"gt_{gid}"
+        )])
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("⬅️", callback_data=f"gpage_{page-1}"))
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"gp_{page-1}"))
     nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="gnoop"))
     if end < len(all_groups):
-        nav.append(InlineKeyboardButton("➡️", callback_data=f"gpage_{page+1}"))
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"gp_{page+1}"))
     if nav:
         rows.append(nav)
-
     rows.append([
-        InlineKeyboardButton(f"✅ Saqlash ({len(selected_ids)} ta)", callback_data="gsave"),
+        InlineKeyboardButton(f"💾 Saqlash ({len(selected)} ta)", callback_data="gsave"),
         InlineKeyboardButton("❌ Bekor", callback_data="gcancel")
     ])
     return InlineKeyboardMarkup(rows)
 
-# ── Yordamchi funksiyalar ─────────────────────────────────────────────────────
+# ── Yordamchi ─────────────────────────────────────────────────────────────────
 
-def session_path(user_id):
-    return os.path.join(SESSIONS_DIR, f"session_{user_id}")
+def session_path(uid):
+    return os.path.join(SESSIONS_DIR, f"session_{uid}")
 
-def is_logged_in(user_id):
-    return os.path.exists(f"{session_path(user_id)}.session")
+def is_logged(uid):
+    return os.path.exists(f"{session_path(uid)}.session")
 
-async def get_or_create_client(user_id):
-    if user_id in user_clients:
+async def get_client(uid):
+    if uid in user_clients:
         try:
-            if not user_clients[user_id].is_connected:
-                await user_clients[user_id].connect()
-            return user_clients[user_id]
+            if not user_clients[uid].is_connected:
+                await user_clients[uid].connect()
+            return user_clients[uid]
         except Exception:
-            del user_clients[user_id]
-
-    path = session_path(user_id)
+            del user_clients[uid]
+    path = session_path(uid)
     if os.path.exists(f"{path}.session"):
         try:
-            client = Client(path, config.API_ID, config.API_HASH)
-            await client.connect()
-            user_clients[user_id] = client
-            return client
+            c = Client(path, config.API_ID, config.API_HASH)
+            await c.connect()
+            user_clients[uid] = c
+            return c
         except Exception:
             return None
     return None
 
-async def fetch_groups(user_client):
-    """(id, name) juftliklari ro'yxatini qaytaradi — tez usul"""
+async def fetch_groups(client):
     groups = []
-    offset_date = 0
-    offset_id = 0
-    offset_peer = await user_client.resolve_peer("me")
-
+    offset_date, offset_id = 0, 0
+    offset_peer = await client.resolve_peer("me")
     while True:
-        r = await user_client.invoke(
+        r = await client.invoke(
             pyrogram.raw.functions.messages.GetDialogs(
-                offset_date=offset_date,
-                offset_id=offset_id,
-                offset_peer=offset_peer,
-                limit=100,
-                hash=0
+                offset_date=offset_date, offset_id=offset_id,
+                offset_peer=offset_peer, limit=100, hash=0
             )
         )
-        if not hasattr(r, "dialogs") or not r.dialogs:
+        if not getattr(r, "dialogs", None):
             break
-
         chats = {c.id: c for c in r.chats}
         for d in r.dialogs:
-            peer = d.peer
-            if hasattr(peer, "chat_id"):
-                cid = peer.chat_id
-                chat = chats.get(cid)
-                if chat and not getattr(chat, "deactivated", False) and not getattr(chat, "left", False):
-                    groups.append((-cid, getattr(chat, "title", str(cid))))
-            elif hasattr(peer, "channel_id"):
-                cid = peer.channel_id
-                chat = chats.get(cid)
-                if chat and getattr(chat, "megagroup", False) and not getattr(chat, "left", False):
-                    groups.append((-cid, getattr(chat, "title", str(cid))))
-
+            p = d.peer
+            if hasattr(p, "chat_id"):
+                c = chats.get(p.chat_id)
+                if c and not getattr(c, "deactivated", False) and not getattr(c, "left", False):
+                    groups.append((-p.chat_id, c.title or str(p.chat_id)))
+            elif hasattr(p, "channel_id"):
+                c = chats.get(p.channel_id)
+                if c and getattr(c, "megagroup", False) and not getattr(c, "left", False):
+                    groups.append((-p.channel_id, c.title or str(p.channel_id)))
         if len(r.dialogs) < 100:
             break
-
         last = r.messages[-1] if r.messages else None
-        if last:
-            offset_date = last.date
-            offset_id = last.id
-            last_peer = r.dialogs[-1].peer
-            try:
-                if hasattr(last_peer, "channel_id"):
-                    offset_peer = await user_client.resolve_peer(-last_peer.channel_id)
-                elif hasattr(last_peer, "chat_id"):
-                    offset_peer = await user_client.resolve_peer(-last_peer.chat_id)
-                elif hasattr(last_peer, "user_id"):
-                    offset_peer = await user_client.resolve_peer(last_peer.user_id)
-            except Exception:
-                pass
-        else:
+        if not last:
             break
-
+        offset_date, offset_id = last.date, last.id
+        lp = r.dialogs[-1].peer
+        try:
+            if hasattr(lp, "channel_id"):
+                offset_peer = await client.resolve_peer(-lp.channel_id)
+            elif hasattr(lp, "chat_id"):
+                offset_peer = await client.resolve_peer(-lp.chat_id)
+            elif hasattr(lp, "user_id"):
+                offset_peer = await client.resolve_peer(lp.user_id)
+        except Exception:
+            break
     return groups
 
-async def save_folder(user_client, group_ids):
-    """Jild yaratishga harakat qiladi, xato bo'lsa None qaytaradi"""
-    async def resolve(g):
+async def try_save_folder(client, group_ids):
+    async def res(g):
         try:
-            return await user_client.resolve_peer(g)
+            return await client.resolve_peer(g)
         except Exception:
             return None
-
-    results = await asyncio.gather(*[resolve(g) for g in group_ids])
-    peers = [p for p in results if p is not None]
+    peers = [p for p in await asyncio.gather(*[res(g) for g in group_ids]) if p]
     if not peers:
-        return None
-
+        return 0
     limit = min(len(peers), 100)
     while limit > 0:
         try:
-            await user_client.invoke(UpdateDialogFilter(
-                id=10,
-                filter=DialogFilter(
+            await client.invoke(UpdateDialogFilter(
+                id=10, filter=DialogFilter(
                     id=10, title="Avto Habar Guruhlar",
                     pinned_peers=[], include_peers=peers[:limit], exclude_peers=[]
                 )
@@ -199,516 +178,422 @@ async def save_folder(user_client, group_ids):
             return limit
         except Exception:
             limit -= 10
-    return None
+    return 0
 
-async def send_auto_message(user_id):
-    user_data = get_user(user_id)
-    if user_data.get("status") != "running":
+async def status_text(uid):
+    d = get_user(uid)
+    st = "🟢 Ishlayapti" if d.get("status") == "running" else "🔴 To'xtatilgan"
+    has_msg = bool(d.get("auto_message") or d.get("auto_message_id"))
+    return (
+        f"📊 **Holat:** {st}\n"
+        f"👥 **Guruhlar:** {len(d.get('groups', []))} ta\n"
+        f"⏱ **Interval:** {d.get('interval', 60)} daqiqa\n"
+        f"✉️ **Xabar:** {'✅' if has_msg else '❌'}"
+    )
+
+def setup_job(uid):
+    d = get_user(uid)
+    jid = f"job_{uid}"
+    if scheduler.get_job(jid):
+        scheduler.remove_job(jid)
+    if d.get("status") == "running":
+        mins = max(1, int(d.get("interval", 60)))
+        scheduler.add_job(send_messages, "interval", minutes=mins, args=[uid], id=jid)
+        print(f"[job] {uid} uchun job qo'shildi, interval={mins} daqiqa")
+
+async def send_messages(uid):
+    d = get_user(uid)
+    if d.get("status") != "running":
         return
-
-    client = await get_or_create_client(user_id)
+    client = await get_client(uid)
     if not client:
-        print(f"[{user_id}] Client topilmadi")
+        print(f"[{uid}] client yo'q")
         return
-
-    groups = user_data.get("groups", [])
-    if not groups:
-        print(f"[{user_id}] Guruhlar bo'sh")
-        return
-
-    message_id = user_data.get("auto_message_id")
-    text = user_data.get("auto_message", "")
-    has_media = user_data.get("has_media", False)
-    is_forward = user_data.get("is_forward", False)
+    groups = d.get("groups", [])
+    text = d.get("auto_message") or ""
+    msg_id = d.get("auto_message_id")
+    has_media = d.get("has_media", False)
+    is_fwd = d.get("is_forward", False)
     bot_id = int(config.BOT_TOKEN.split(":")[0])
 
-    if not message_id and not text:
-        print(f"[{user_id}] Xabar yo'q")
+    if not groups:
+        print(f"[{uid}] guruh yo'q")
+        return
+    if not text and not msg_id:
+        print(f"[{uid}] xabar yo'q")
         return
 
-    print(f"[{user_id}] Yuborish: {len(groups)} guruh, media={has_media}, text='{text[:30]}'")
-    ok, fail = 0, 0
-
+    print(f"[{uid}] yuborish: {len(groups)} guruh, text='{text[:20]}', media={has_media}")
+    ok = fail = 0
     for g in groups:
         try:
-            if has_media and message_id:
-                # Media xabarni forward yoki copy
-                if is_forward:
-                    await client.forward_messages(chat_id=g, from_chat_id=bot_id, message_ids=message_id)
-                else:
-                    await client.copy_message(chat_id=g, from_chat_id=bot_id, message_id=message_id)
-            elif text:
+            if text and not has_media:
                 await client.send_message(g, text)
-            elif message_id:
-                # Oxirgi urinish — forward
-                await client.forward_messages(chat_id=g, from_chat_id=bot_id, message_ids=message_id)
+            elif msg_id:
+                if is_fwd:
+                    await client.forward_messages(chat_id=g, from_chat_id=bot_id, message_ids=msg_id)
+                else:
+                    await client.copy_message(chat_id=g, from_chat_id=bot_id, message_id=msg_id)
             ok += 1
             await asyncio.sleep(1)
         except Exception as e:
             fail += 1
-            print(f"[{user_id}] Xatolik {g}: {e}")
+            print(f"[{uid}] xatolik {g}: {e}")
+    print(f"[{uid}] natija: {ok} ok, {fail} xato")
 
-    print(f"[{user_id}] Natija: {ok} ok, {fail} xato")
-
-def setup_job(user_id):
-    user_data = get_user(user_id)
-    interval_minutes = max(1, int(user_data.get("interval", 60)))
-    job_id = f"job_{user_id}"
-    if scheduler.get_job(job_id):
-        scheduler.remove_job(job_id)
-    if user_data.get("status") == "running":
-        scheduler.add_job(send_auto_message, "interval", minutes=interval_minutes,
-                          args=[user_id], id=job_id)
-
-async def build_status_text(user_id):
-    user_data = get_user(user_id)
-    status = "🟢 Ishlayapti" if user_data.get("status") == "running" else "🔴 To'xtatilgan"
-    groups_count = len(user_data.get("groups", []))
-    interval = user_data.get("interval", 60)
-    msg_type = "Yo'q ❌"
-    if user_data.get("auto_message_id"):
-        msg_type = "Media/Matn ✅"
-    elif user_data.get("auto_message"):
-        msg_type = "Matn ✅"
-    return (
-        f"📊 **Boshqaruv paneli**\n\n"
-        f"**Holat:** {status}\n"
-        f"**Guruhlar:** {groups_count} ta\n"
-        f"**Interval:** Har {interval} daqiqada\n"
-        f"**Xabar:** {msg_type}"
-    )
-
-async def open_group_selector(user_id, target_message):
-    """Guruh tanlash sahifasini ochadi yoki yangilaydi"""
-    user_client = await get_or_create_client(user_id)
-    if not user_client:
-        await target_message.edit_text("❌ Sessiya topilmadi. Qaytadan kiring.")
-        return
-
-    await target_message.edit_text("⏳ Guruhlar yuklanmoqda...")
-    try:
-        all_groups = await fetch_groups(user_client)
-    except Exception as e:
-        await target_message.edit_text(f"❌ Xatolik: {e}")
-        return
-
-    if not all_groups:
-        await target_message.edit_text("❌ Sizda hech qanday guruh topilmadi.")
-        return
-
-    # Avval saqlangan guruhlarni tanlangan deb belgilaymiz
-    saved = set(get_user(user_id).get("groups", []))
-    selected = saved & {gid for gid, _ in all_groups}
-
-    user_states[user_id] = {
-        "state": "SELECTING_GROUPS",
-        "all_groups": all_groups,
-        "selected": selected,
-        "page": 0
-    }
-
-    await target_message.edit_text(
-        f"📋 **Guruhlarni tanlang** ({len(all_groups)} ta topildi)\n"
-        f"✅ — tanlangan, ☑️ — tanlanmagan\n"
-        f"Tugagach **Saqlash** tugmasini bosing:",
-        reply_markup=groups_page_inline(all_groups, selected, 0),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-# ── Xabar handleri ────────────────────────────────────────────────────────────
+# ── /start va xabar handleri ──────────────────────────────────────────────────
 
 @bot.on_message(filters.private)
-async def message_handler(client, message):
-    chat_id = message.chat.id
+async def on_message(client, message):
+    uid = message.chat.id
     text = message.text or ""
 
     if text == "/start":
-        user_states.pop(chat_id, None)
-        logged = is_logged_in(chat_id)
+        user_states.pop(uid, None)
+        logged = is_logged(uid)
         await message.reply_text(
             "👋 **Avto-Habar Botiga Xush Kelibsiz!**\n\n"
-            + ("Quyidagi menyu orqali botni boshqaring." if logged
-               else "Boshlash uchun hisobingizga kiring."),
-            reply_markup=main_menu() if logged else login_menu(),
+            + ("Quyidagi tugmalar orqali boshqaring:" if logged else "Boshlash uchun hisobga kiring:"),
+            reply_markup=main_inline(logged),
             parse_mode=ParseMode.MARKDOWN
         )
         return
 
-    if text == "❌ Bekor qilish":
-        state_info = user_states.pop(chat_id, {})
-        tmp_client = state_info.get("client")
-        if tmp_client:
-            try:
-                await tmp_client.disconnect()
-            except Exception:
-                pass
-        logged = is_logged_in(chat_id)
-        await message.reply_text("Amal bekor qilindi.",
-                                 reply_markup=main_menu() if logged else login_menu())
-        return
+    state = user_states.get(uid, {}).get("state")
 
-    state_info = user_states.get(chat_id, {})
-    state = state_info.get("state")
-
-    if state == "WAITING_PHONE":
+    # Login holatlari
+    if state == "WAIT_PHONE":
         if message.contact:
             phone = message.contact.phone_number
             if not phone.startswith("+"):
                 phone = "+" + phone
         else:
             phone = text.strip()
-            if not phone or not phone.startswith("+") or not phone[1:].isdigit() or len(phone) < 10:
-                await message.reply_text("❌ To'g'ri telefon raqam kiriting (masalan: +998901234567)")
+            if not phone.startswith("+") or not phone[1:].isdigit() or len(phone) < 10:
+                await message.reply_text("❌ To'g'ri raqam kiriting: +998901234567",
+                                         reply_markup=cancel_inline())
                 return
-
-        await message.reply_text("⏳ Kod yuborilmoqda...", reply_markup=cancel_menu())
+        await message.reply_text("⏳ Kod yuborilmoqda...")
         try:
-            user_client = Client(session_path(chat_id), config.API_ID, config.API_HASH)
-            await user_client.connect()
-            sent_code = await user_client.send_code(phone)
-            user_states[chat_id] = {
-                "state": "WAITING_CODE",
-                "phone": phone,
-                "phone_code_hash": sent_code.phone_code_hash,
-                "client": user_client
-            }
+            uc = Client(session_path(uid), config.API_ID, config.API_HASH)
+            await uc.connect()
+            sent = await uc.send_code(phone)
+            user_states[uid] = {"state": "WAIT_CODE", "phone": phone,
+                                 "hash": sent.phone_code_hash, "client": uc}
             await message.reply_text(
-                "📲 Telegramdan kelgan **5 xonali kodni** kiriting:\n_(Masalan: `12345`)_",
-                reply_markup=cancel_menu(),
-                parse_mode=ParseMode.MARKDOWN
+                "📲 Telegramdan kelgan kodni kiriting:\n_(masalan: `12345`)_",
+                reply_markup=cancel_inline(), parse_mode=ParseMode.MARKDOWN
             )
         except Exception as e:
-            await message.reply_text(f"❌ Xatolik: {e}", reply_markup=login_menu())
-            user_states.pop(chat_id, None)
+            await message.reply_text(f"❌ Xatolik: {e}", reply_markup=main_inline(False))
+            user_states.pop(uid, None)
         return
 
-    elif state == "WAITING_CODE":
-        code = text.replace(" ", "").replace(",", "").replace(".", "").strip()
+    if state == "WAIT_CODE":
+        code = text.replace(" ", "").replace(",", "").strip()
         if not code.isdigit() or len(code) < 4:
-            await message.reply_text("❌ Kod faqat raqamlardan iborat (4-6 ta). Qaytadan kiriting:")
+            await message.reply_text("❌ Kod noto'g'ri. Qaytadan kiriting:", reply_markup=cancel_inline())
             return
-
-        state_data = user_states[chat_id]
-        user_client = state_data["client"]
-        phone = state_data["phone"]
-        phone_code_hash = state_data["phone_code_hash"]
-
+        st = user_states[uid]
         try:
-            await user_client.sign_in(phone, phone_code_hash, code)
-            user_clients[chat_id] = user_client
-            update_user(chat_id, phone=phone)
-            user_states.pop(chat_id, None)
-            await message.reply_text(
-                "✅ Hisobga muvaffaqiyatli kirdingiz!\nEndi barcha funksiyalar mavjud.",
-                reply_markup=main_menu()
-            )
+            await st["client"].sign_in(st["phone"], st["hash"], code)
+            user_clients[uid] = st["client"]
+            update_user(uid, phone=st["phone"])
+            user_states.pop(uid, None)
+            await message.reply_text("✅ Muvaffaqiyatli kirdingiz!", reply_markup=main_inline(True))
         except SessionPasswordNeeded:
-            user_states[chat_id]["state"] = "WAITING_PASSWORD"
-            await message.reply_text("🔐 Ikki bosqichli himoya yoqilgan.\nParolni kiriting:",
-                                     reply_markup=cancel_menu())
+            user_states[uid]["state"] = "WAIT_PASS"
+            await message.reply_text("🔐 2FA parolini kiriting:", reply_markup=cancel_inline())
         except (PhoneCodeInvalid, PhoneCodeExpired):
-            await message.reply_text("❌ Kod noto'g'ri yoki muddati o'tgan. Qaytadan urinib ko'ring.",
-                                     reply_markup=login_menu())
-            user_states.pop(chat_id, None)
+            await message.reply_text("❌ Kod noto'g'ri yoki eskirgan.", reply_markup=main_inline(False))
+            user_states.pop(uid, None)
         except Exception as e:
-            await message.reply_text(f"❌ Xatolik: {e}", reply_markup=login_menu())
-            user_states.pop(chat_id, None)
+            await message.reply_text(f"❌ Xatolik: {e}", reply_markup=main_inline(False))
+            user_states.pop(uid, None)
         return
 
-    elif state == "WAITING_PASSWORD":
-        password = text.strip()
-        if not password:
-            await message.reply_text("❌ Parol bo'sh bo'lishi mumkin emas.")
-            return
-        user_client = user_states[chat_id]["client"]
+    if state == "WAIT_PASS":
         try:
-            await user_client.check_password(password)
-            user_clients[chat_id] = user_client
-            update_user(chat_id, phone=user_states[chat_id]["phone"])
-            user_states.pop(chat_id, None)
-            await message.reply_text("✅ Hisobga muvaffaqiyatli kirdingiz!", reply_markup=main_menu())
+            await user_states[uid]["client"].check_password(text.strip())
+            user_clients[uid] = user_states[uid]["client"]
+            update_user(uid, phone=user_states[uid]["phone"])
+            user_states.pop(uid, None)
+            await message.reply_text("✅ Muvaffaqiyatli kirdingiz!", reply_markup=main_inline(True))
         except Exception as e:
-            await message.reply_text(f"❌ Noto'g'ri parol: {e}", reply_markup=login_menu())
-            user_states.pop(chat_id, None)
+            await message.reply_text(f"❌ Noto'g'ri parol: {e}", reply_markup=main_inline(False))
+            user_states.pop(uid, None)
         return
 
-    elif state == "WAITING_AUTO_MESSAGE":
-        is_forward = True if getattr(message, "forward_date", None) else False
-        # Xabarni to'liq saqlash: matn, caption, media
-        msg_data = {
-            "message_id": message.id,
-            "is_forward": is_forward,
-            "text": message.text or message.caption or "",
-            "has_media": bool(message.media),
-        }
-        update_user(chat_id,
-                    auto_message_id=message.id,
-                    auto_message=message.text or message.caption or "",
-                    is_forward=is_forward,
-                    has_media=bool(message.media))
-        user_states.pop(chat_id, None)
-        await message.reply_text(
-            "✅ Xabar saqlandi!",
-            reply_markup=main_menu()
-        )
+    if state == "WAIT_MSG":
+        is_fwd = bool(getattr(message, "forward_date", None))
+        has_media = bool(message.media)
+        msg_text = message.text or message.caption or ""
+        update_user(uid, auto_message_id=message.id, auto_message=msg_text,
+                    has_media=has_media, is_forward=is_fwd)
+        user_states.pop(uid, None)
+        await message.reply_text("✅ Xabar saqlandi!", reply_markup=main_inline(True))
         return
 
-    elif state == "WAITING_INTERVAL":
-        val = text.strip()
-        if not val.isdigit() or int(val) < 1:
-            await message.reply_text("❌ Iltimos, 1 dan katta raqam kiriting (daqiqalarda):")
+    if state == "WAIT_INTERVAL":
+        if not text.isdigit() or int(text) < 1:
+            await message.reply_text("❌ 1 dan katta raqam kiriting:", reply_markup=cancel_inline())
             return
-        update_user(chat_id, interval=int(val))
-        user_states.pop(chat_id, None)
-        setup_job(chat_id)
-        await message.reply_text(f"✅ Interval {val} daqiqaga o'rnatildi!", reply_markup=main_menu())
+        update_user(uid, interval=int(text))
+        setup_job(uid)
+        user_states.pop(uid, None)
+        await message.reply_text(f"✅ Interval {text} daqiqaga o'rnatildi!", reply_markup=main_inline(True))
         return
 
-    # ── Tugma handlerlari ─────────────────────────────────────────────────────
-
-    if not is_logged_in(chat_id) and text != "🔐 Hisobga kirish":
-        await message.reply_text("❌ Avval hisobga kiring.", reply_markup=login_menu())
-        return
-
-    if text == "🔐 Hisobga kirish":
-        if is_logged_in(chat_id):
-            await message.reply_text("✅ Siz allaqachon hisobga kirgansiz.", reply_markup=main_menu())
-            return
-        user_states[chat_id] = {"state": "WAITING_PHONE"}
-        contact_menu = ReplyKeyboardMarkup([
-            [KeyboardButton("📞 Raqamni yuborish", request_contact=True)],
-            [KeyboardButton("❌ Bekor qilish")]
-        ], resize_keyboard=True)
-        await message.reply_text("📱 Telefon raqamingizni kiriting yoki tugma orqali yuboring:",
-                                 reply_markup=contact_menu)
-
-    elif text == "📁 Guruhlarni tanlash":
-        user_client = await get_or_create_client(chat_id)
-        if not user_client:
-            await message.reply_text("❌ Sessiya topilmadi. Qaytadan kiring.", reply_markup=login_menu())
-            return
-        msg = await message.reply_text("⏳ Yuklanmoqda...")
-        await open_group_selector(chat_id, msg)
-
-    elif text == "✉️ Avto habar":
-        user_states[chat_id] = {"state": "WAITING_AUTO_MESSAGE"}
-        await message.reply_text(
-            "📨 Guruhlarga yuboriladigan xabarni yuboring:\n_(Matn, rasm, video yoki forward)_",
-            reply_markup=cancel_menu(),
-            parse_mode=ParseMode.MARKDOWN
-        )
-
-    elif text == "⏱ Vaqtni sozlash":
-        user_states[chat_id] = {"state": "WAITING_INTERVAL"}
-        current = get_user(chat_id).get("interval", 60)
-        await message.reply_text(
-            f"⏱ Hozirgi interval: **{current} daqiqa**\n\nYangi intervalini daqiqalarda kiriting:",
-            reply_markup=cancel_menu(),
-            parse_mode=ParseMode.MARKDOWN
-        )
-
-    elif text == "📊 Boshqaruv paneli":
-        user_data = get_user(chat_id)
-        await message.reply_text(
-            await build_status_text(chat_id),
-            reply_markup=control_panel_inline(user_data.get("status", "stopped")),
-            parse_mode=ParseMode.MARKDOWN
-        )
-
-    elif text == "🚪 Hisobdan chiqish":
-        await message.reply_text(
-            "⚠️ Hisobdan chiqmoqchimisiz?\nBarcha ma'lumotlar o'chiriladi.",
-            reply_markup=confirm_logout_inline()
-        )
+    # Kontakt yuborilsa (telefon raqam)
+    if message.contact and state == "WAIT_PHONE":
+        return  # yuqorida handle qilingan
 
 # ── Callback handleri ─────────────────────────────────────────────────────────
 
 @bot.on_callback_query()
-async def callback_handler(client, callback_query):
-    chat_id = callback_query.from_user.id
-    data = callback_query.data
+async def on_callback(client, cq):
+    uid = cq.from_user.id
+    data = cq.data
 
-    # ── Guruh tanlash callbacklari ────────────────────────────────────────────
-
-    if data == "open_groups":
-        await open_group_selector(chat_id, callback_query.message)
-        await callback_query.answer()
-        return
-
-    if data.startswith("gtoggle_"):
-        state_info = user_states.get(chat_id, {})
-        if state_info.get("state") != "SELECTING_GROUPS":
-            await callback_query.answer("Sessiya tugagan. Qaytadan oching.", show_alert=True)
-            return
-        gid = int(data.split("_", 1)[1])
-        selected = state_info["selected"]
-        if gid in selected:
-            selected.discard(gid)
-        else:
-            if len(selected) >= MAX_FOLDER_PEERS:
-                await callback_query.answer(f"❌ Maksimum {MAX_FOLDER_PEERS} ta tanlash mumkin!", show_alert=True)
-                return
-            selected.add(gid)
-        await callback_query.message.edit_reply_markup(
-            reply_markup=groups_page_inline(state_info["all_groups"], selected, state_info["page"])
-        )
-        await callback_query.answer()
-        return
-
-    if data.startswith("gpage_"):
-        state_info = user_states.get(chat_id, {})
-        if state_info.get("state") != "SELECTING_GROUPS":
-            await callback_query.answer()
-            return
-        page = int(data.split("_", 1)[1])
-        state_info["page"] = page
-        await callback_query.message.edit_reply_markup(
-            reply_markup=groups_page_inline(state_info["all_groups"], state_info["selected"], page)
-        )
-        await callback_query.answer()
-        return
-
-    if data == "gnoop":
-        await callback_query.answer()
-        return
-
-    if data == "gsave":
-        state_info = user_states.pop(chat_id, {})
-        if state_info.get("state") != "SELECTING_GROUPS":
-            await callback_query.answer("Sessiya tugagan.", show_alert=True)
-            return
-
-        selected = list(state_info["selected"])
-        if not selected:
-            await callback_query.answer("❌ Hech bo'lmaganda 1 ta guruh tanlang!", show_alert=True)
-            user_states[chat_id] = state_info  # qaytaramiz
-            return
-
-        user_client = await get_or_create_client(chat_id)
-        await callback_query.message.edit_text(f"⏳ {len(selected)} ta guruh jildga qo'shilmoqda...")
+    async def edit(text, markup=None, md=True):
         try:
-            update_user(chat_id, groups=selected)
-            saved = await save_folder(user_client, selected)
-            if saved is None:
-                await callback_query.message.edit_text(
-                    f"✅ {len(selected)} ta guruh saqlandi! Xabar yuborish ishlaydi.\n"
-                    f"_(Telegram jild yaratishga ruxsat bermadi — bu normal)_",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-            elif saved < len(selected):
-                await callback_query.message.edit_text(
-                    f"✅ {len(selected)} ta guruh saqlandi! Xabar yuborish ishlaydi.\n"
-                    f"_(Jildga {saved} ta qo'shildi)_",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-            else:
-                await callback_query.message.edit_text(
-                    f"✅ {len(selected)} ta guruh saqlandi va jildga qo'shildi!"
-                )
-        except Exception as e:
-            await callback_query.message.edit_text(f"❌ Jild yaratishda xatolik: {e}")
-        await callback_query.answer()
+            await cq.message.edit_text(text, reply_markup=markup,
+                                       parse_mode=ParseMode.MARKDOWN if md else None)
+        except Exception:
+            pass
+
+    if data == "main_menu":
+        logged = is_logged(uid)
+        await edit(
+            "👋 **Avto-Habar Bot**\n\nQuyidagi tugmalar orqali boshqaring:" if logged
+            else "Boshlash uchun hisobga kiring:",
+            main_inline(logged)
+        )
+        await cq.answer()
         return
 
-    if data == "gcancel":
-        user_states.pop(chat_id, None)
-        await callback_query.message.delete()
-        await callback_query.answer("Bekor qilindi.")
-        return
-
-    # ── Boshqaruv paneli callbacklari ─────────────────────────────────────────
-
-    if data == "close_panel":
-        await callback_query.message.delete()
-        return
-
-    if data == "confirm_logout":
-        if chat_id in user_clients:
+    if data == "cancel_state":
+        st = user_states.pop(uid, {})
+        c = st.get("client")
+        if c:
             try:
-                await user_clients[chat_id].disconnect()
+                await c.disconnect()
             except Exception:
                 pass
-            del user_clients[chat_id]
+        logged = is_logged(uid)
+        await edit("Bekor qilindi.", main_inline(logged))
+        await cq.answer()
+        return
 
-        for ext in [".session", ".session-journal"]:
-            f = session_path(chat_id) + ext
-            if os.path.exists(f):
-                os.remove(f)
+    if data == "login":
+        if is_logged(uid):
+            await edit("✅ Allaqachon kirgansiz.", main_inline(True))
+            await cq.answer()
+            return
+        user_states[uid] = {"state": "WAIT_PHONE"}
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Bekor", callback_data="cancel_state")]])
+        # Kontakt tugmasi faqat reply keyboard orqali ishlaydi
+        from pyrogram.types import ReplyKeyboardMarkup, KeyboardButton
+        contact_kb = ReplyKeyboardMarkup([
+            [KeyboardButton("📞 Raqamni yuborish", request_contact=True)],
+        ], resize_keyboard=True, one_time_keyboard=True)
+        await cq.message.reply_text(
+            "📱 Telefon raqamingizni yuboring yoki yozing (+998...):",
+            reply_markup=contact_kb
+        )
+        await cq.answer()
+        return
 
-        job_id = f"job_{chat_id}"
-        if scheduler.get_job(job_id):
-            scheduler.remove_job(job_id)
+    if data == "status":
+        d = get_user(uid)
+        await edit(await status_text(uid), status_inline(d.get("status", "stopped")))
+        await cq.answer()
+        return
 
-        update_user(chat_id, status="stopped", groups=[], auto_message_id=None,
-                    auto_message=None, phone=None)
-        user_states.pop(chat_id, None)
+    if data == "set_message":
+        if not is_logged(uid):
+            await cq.answer("❌ Avval hisobga kiring!", show_alert=True)
+            return
+        user_states[uid] = {"state": "WAIT_MSG"}
+        await edit("📨 Guruhlarga yuboriladigan xabarni yuboring:\n_(matn, rasm, video yoki forward)_",
+                   cancel_inline())
+        await cq.answer()
+        return
 
-        await callback_query.message.edit_text("✅ Hisobdan muvaffaqiyatli chiqdingiz.")
-        await bot.send_message(chat_id, "Qaytadan kirish uchun tugmani bosing.", reply_markup=login_menu())
+    if data == "set_interval":
+        d = get_user(uid)
+        user_states[uid] = {"state": "WAIT_INTERVAL"}
+        await edit(f"⏱ Hozirgi interval: **{d.get('interval', 60)} daqiqa**\n\nYangi qiymat kiriting:",
+                   cancel_inline())
+        await cq.answer()
         return
 
     if data == "start":
-        user_data = get_user(chat_id)
-        if not user_data.get("groups"):
-            await callback_query.answer("❌ Avval guruhlarni tanlang!", show_alert=True)
+        d = get_user(uid)
+        if not d.get("groups"):
+            await cq.answer("❌ Avval guruhlarni tanlang!", show_alert=True)
             return
-        if not user_data.get("auto_message_id") and not user_data.get("auto_message"):
-            await callback_query.answer("❌ Avval xabar kiriting!", show_alert=True)
+        if not d.get("auto_message") and not d.get("auto_message_id"):
+            await cq.answer("❌ Avval xabar kiriting!", show_alert=True)
             return
-        update_user(chat_id, status="running")
-        setup_job(chat_id)
-        await callback_query.message.edit_text(
-            await build_status_text(chat_id),
-            reply_markup=control_panel_inline("running"),
-            parse_mode=ParseMode.MARKDOWN
-        )
-        await callback_query.answer("✅ Boshlandi!")
+        update_user(uid, status="running")
+        setup_job(uid)
+        await edit(await status_text(uid), status_inline("running"))
+        await cq.answer("✅ Boshlandi!")
         return
 
     if data == "stop":
-        update_user(chat_id, status="stopped")
-        job_id = f"job_{chat_id}"
-        if scheduler.get_job(job_id):
-            scheduler.remove_job(job_id)
-        await callback_query.message.edit_text(
-            await build_status_text(chat_id),
-            reply_markup=control_panel_inline("stopped"),
-            parse_mode=ParseMode.MARKDOWN
-        )
-        await callback_query.answer("🛑 To'xtatildi!")
+        update_user(uid, status="stopped")
+        jid = f"job_{uid}"
+        if scheduler.get_job(jid):
+            scheduler.remove_job(jid)
+        await edit(await status_text(uid), status_inline("stopped"))
+        await cq.answer("🛑 To'xtatildi!")
         return
 
-    if data == "clear_message":
-        update_user(chat_id, auto_message_id=None, auto_message=None, is_forward=False)
-        user_data = get_user(chat_id)
-        await callback_query.message.edit_text(
-            await build_status_text(chat_id),
-            reply_markup=control_panel_inline(user_data.get("status", "stopped")),
-            parse_mode=ParseMode.MARKDOWN
-        )
-        await callback_query.answer("🗑 Xabar o'chirildi!")
+    if data == "clear_msg":
+        update_user(uid, auto_message=None, auto_message_id=None, has_media=False, is_forward=False)
+        await edit(await status_text(uid), status_inline(get_user(uid).get("status", "stopped")))
+        await cq.answer("🗑 Xabar o'chirildi!")
         return
 
-    await callback_query.answer()
+    if data == "logout_ask":
+        await edit("⚠️ Hisobdan chiqmoqchimisiz?", confirm_inline("logout_yes", "main_menu"))
+        await cq.answer()
+        return
+
+    if data == "logout_yes":
+        if uid in user_clients:
+            try:
+                await user_clients[uid].disconnect()
+            except Exception:
+                pass
+            del user_clients[uid]
+        for ext in [".session", ".session-journal"]:
+            f = session_path(uid) + ext
+            if os.path.exists(f):
+                os.remove(f)
+        jid = f"job_{uid}"
+        if scheduler.get_job(jid):
+            scheduler.remove_job(jid)
+        update_user(uid, status="stopped", groups=[], auto_message=None,
+                    auto_message_id=None, phone=None)
+        user_states.pop(uid, None)
+        await edit("✅ Hisobdan chiqdingiz.", main_inline(False))
+        await cq.answer()
+        return
+
+    # ── Guruh tanlash ─────────────────────────────────────────────────────────
+
+    if data == "open_groups":
+        if not is_logged(uid):
+            await cq.answer("❌ Avval hisobga kiring!", show_alert=True)
+            return
+        uc = await get_client(uid)
+        if not uc:
+            await cq.answer("❌ Sessiya topilmadi!", show_alert=True)
+            return
+        await edit("⏳ Guruhlar yuklanmoqda...")
+        try:
+            all_groups = await fetch_groups(uc)
+        except Exception as e:
+            await edit(f"❌ Xatolik: {e}", main_inline(True))
+            await cq.answer()
+            return
+        if not all_groups:
+            await edit("❌ Guruh topilmadi.", main_inline(True))
+            await cq.answer()
+            return
+        saved = set(get_user(uid).get("groups", []))
+        selected = saved & {g[0] for g in all_groups}
+        user_states[uid] = {"state": "SEL_GROUPS", "all": all_groups,
+                             "sel": selected, "page": 0}
+        await edit(
+            f"📋 **Guruhlarni tanlang** ({len(all_groups)} ta)\n✅ tanlangan | ☑️ tanlanmagan",
+            groups_inline(all_groups, selected, 0)
+        )
+        await cq.answer()
+        return
+
+    if data.startswith("gt_"):
+        st = user_states.get(uid, {})
+        if st.get("state") != "SEL_GROUPS":
+            await cq.answer("Qaytadan oching.", show_alert=True)
+            return
+        gid = int(data[3:])
+        sel = st["sel"]
+        if gid in sel:
+            sel.discard(gid)
+        else:
+            sel.add(gid)
+        try:
+            await cq.message.edit_reply_markup(groups_inline(st["all"], sel, st["page"]))
+        except Exception:
+            pass
+        await cq.answer()
+        return
+
+    if data.startswith("gp_"):
+        st = user_states.get(uid, {})
+        if st.get("state") != "SEL_GROUPS":
+            await cq.answer()
+            return
+        st["page"] = int(data[3:])
+        try:
+            await cq.message.edit_reply_markup(groups_inline(st["all"], st["sel"], st["page"]))
+        except Exception:
+            pass
+        await cq.answer()
+        return
+
+    if data == "gnoop":
+        await cq.answer()
+        return
+
+    if data == "gsave":
+        st = user_states.pop(uid, {})
+        if st.get("state") != "SEL_GROUPS":
+            await cq.answer("Sessiya tugagan.", show_alert=True)
+            return
+        selected = list(st["sel"])
+        if not selected:
+            await cq.answer("❌ Kamida 1 ta guruh tanlang!", show_alert=True)
+            user_states[uid] = st
+            return
+        update_user(uid, groups=selected)
+        uc = await get_client(uid)
+        if uc:
+            await try_save_folder(uc, selected)
+        await edit(f"✅ {len(selected)} ta guruh saqlandi!", main_inline(True))
+        await cq.answer()
+        return
+
+    if data == "gcancel":
+        user_states.pop(uid, None)
+        await edit("Bekor qilindi.", main_inline(True))
+        await cq.answer()
+        return
+
+    await cq.answer()
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 
 def startup_jobs():
-    data = load_db() if os.path.exists("users_data.json") else {}
-    for user_id_str, user_data in data.items():
-        if user_data.get("status") == "running":
-            setup_job(int(user_id_str))
+    data = load_db()
+    for uid_str, d in data.items():
+        if d.get("status") == "running":
+            setup_job(int(uid_str))
 
 if __name__ == "__main__":
     import pyrogram
 
-    async def main_loop():
+    async def main():
         await bot.start()
-        print(f"Bot @{(await bot.get_me()).username} sifatida ishga tushdi!")
+        print(f"Bot @{(await bot.get_me()).username} ishga tushdi!")
         scheduler.start()
         startup_jobs()
         await pyrogram.idle()
         await bot.stop()
 
-    print("Bot is starting...")
-    loop.run_until_complete(main_loop())
+    print("Bot starting...")
+    loop.run_until_complete(main())
