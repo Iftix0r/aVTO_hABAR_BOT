@@ -29,6 +29,9 @@ def main_menu():
         [KeyboardButton("ℹ️ Holat")]
     ], resize_keyboard=True)
 
+def login_menu():
+    return ReplyKeyboardMarkup([[KeyboardButton("🔐 Hisobga kirish")]], resize_keyboard=True)
+
 def cancel_menu():
     return ReplyKeyboardMarkup([[KeyboardButton("❌ Bekor qilish")]], resize_keyboard=True)
 
@@ -93,10 +96,11 @@ async def message_handler(client, message):
 
     if text == "/start":
         user_states.pop(chat_id, None)
+        is_logged_in = os.path.exists(f"session_{chat_id}.session")
         await message.reply_text(
             "👋 Salom! Avto-habar botiga xush kelibsiz.\n"
             "Quyidagi menyu orqali botni boshqaring:",
-            reply_markup=main_menu()
+            reply_markup=main_menu() if is_logged_in else login_menu()
         )
         return
 
@@ -114,10 +118,9 @@ async def message_handler(client, message):
             phone = message.contact.phone_number
         else:
             phone = text.strip()
-            
-        if not phone:
-            await message.reply_text("Iltimos, raqamni kiriting yoki tugma orqali yuboring.")
-            return
+            if not phone or not phone.startswith("+") or not phone[1:].isdigit():
+                await message.reply_text("❌ Iltimos, to'g'ri telefon raqam kiriting (masalan: +998901234567) yoki tugma orqali yuboring.")
+                return
             
         await message.reply_text("Kodni kutmoqdamiz... Iltimos kuting.", reply_markup=cancel_menu())
         try:
@@ -139,6 +142,9 @@ async def message_handler(client, message):
 
     elif state == "WAITING_CODE":
         code = text.replace(" ", "").replace(",", "").strip()
+        if not code.isdigit():
+            await message.reply_text("❌ Kod faqat raqamlardan iborat bo'lishi kerak. Qaytadan kiriting:")
+            return
         state_data = user_states[chat_id]
         user_client = state_data["client"]
         phone = state_data["phone"]
@@ -149,7 +155,7 @@ async def message_handler(client, message):
             user_clients[chat_id] = user_client
             update_user(chat_id, phone=phone)
             user_states.pop(chat_id, None)
-            await message.reply_text("✅ Hisobga muvaffaqiyatli kirdingiz!", reply_markup=main_menu())
+            await message.reply_text("✅ Hisobga muvaffaqiyatli kirdingiz! Endi barcha funksiyalar mavjud.", reply_markup=main_menu())
         except SessionPasswordNeeded:
             user_states[chat_id]["state"] = "WAITING_PASSWORD"
             await message.reply_text("🔐 Ikki bosqichli autentifikatsiya parolini kiriting:", reply_markup=cancel_menu())
@@ -192,7 +198,7 @@ async def message_handler(client, message):
     # Button handlers
     if text == "🔐 Hisobga kirish":
         if os.path.exists(f"session_{chat_id}.session"):
-            await message.reply_text("✅ Siz allaqachon hisobga kirgansiz.")
+            await message.reply_text("✅ Siz allaqachon hisobga kirgansiz.", reply_markup=main_menu())
             return
         user_states[chat_id] = {"state": "WAITING_PHONE"}
         contact_menu = ReplyKeyboardMarkup([
