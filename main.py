@@ -208,33 +208,46 @@ async def send_messages(uid):
     client = await get_client(uid)
     if not client:
         print(f"[{uid}] client yo'q")
+        try:
+            await bot.send_message(uid, "❌ Sessiya topilmadi, xabar yuborilmadi. Qaytadan kiring.")
+        except Exception:
+            pass
         return
     groups = d.get("groups", [])
     text = d.get("auto_message") or ""
-    msg_id = d.get("auto_message_id")
     has_media = d.get("has_media", False)
-    is_fwd = d.get("is_forward", False)
-    bot_id = int(config.BOT_TOKEN.split(":")[0])
+    file_id = d.get("media_file_id")
+    media_type = d.get("media_type", "")
 
     if not groups:
         print(f"[{uid}] guruh yo'q")
         return
-    if not text and not msg_id:
+    if not text and not file_id:
         print(f"[{uid}] xabar yo'q")
         return
 
-    print(f"[{uid}] yuborish: {len(groups)} guruh, text='{text[:20]}', media={has_media}")
+    print(f"[{uid}] yuborish: {len(groups)} guruh, media={has_media}, type={media_type}")
     ok = fail = 0
     errors = []
     for g in groups:
         try:
-            if text and not has_media:
-                await client.send_message(g, text)
-            elif msg_id:
-                if is_fwd:
-                    await client.forward_messages(chat_id=g, from_chat_id=bot_id, message_ids=msg_id)
+            if has_media and file_id:
+                if "PHOTO" in media_type.upper():
+                    await client.send_photo(g, file_id, caption=text or None)
+                elif "VIDEO" in media_type.upper():
+                    await client.send_video(g, file_id, caption=text or None)
+                elif "AUDIO" in media_type.upper():
+                    await client.send_audio(g, file_id, caption=text or None)
+                elif "VOICE" in media_type.upper():
+                    await client.send_voice(g, file_id, caption=text or None)
+                elif "STICKER" in media_type.upper():
+                    await client.send_sticker(g, file_id)
+                elif "ANIMATION" in media_type.upper():
+                    await client.send_animation(g, file_id, caption=text or None)
                 else:
-                    await client.copy_message(chat_id=g, from_chat_id=bot_id, message_id=msg_id)
+                    await client.send_document(g, file_id, caption=text or None)
+            elif text:
+                await client.send_message(g, text)
             ok += 1
             await asyncio.sleep(1)
         except Exception as e:
@@ -347,10 +360,24 @@ async def on_message(client, message):
         is_fwd = bool(getattr(message, "forward_date", None))
         has_media = bool(message.media)
         msg_text = message.text or message.caption or ""
-        update_user(uid, auto_message_id=message.id, auto_message=msg_text,
-                    has_media=has_media, is_forward=is_fwd)
+
+        if has_media:
+            # Media faylni bot serverida saqlash uchun file_id olamiz
+            media = (message.photo or message.video or message.document or
+                     message.audio or message.voice or message.sticker or
+                     message.animation)
+            file_id = getattr(media, "file_id", None)
+            update_user(uid, auto_message_id=message.id, auto_message=msg_text,
+                        has_media=True, is_forward=is_fwd, media_file_id=file_id,
+                        media_type=str(message.media))
+        else:
+            update_user(uid, auto_message_id=None, auto_message=msg_text,
+                        has_media=False, is_forward=False, media_file_id=None,
+                        media_type=None)
+
         user_states.pop(uid, None)
-        await message.reply_text("✅ Xabar saqlandi!", reply_markup=main_inline(True))
+        mtype = "Media" if has_media else "Matn"
+        await message.reply_text(f"✅ {mtype} xabar saqlandi!", reply_markup=main_inline(True))
         return
 
     if state == "WAIT_INTERVAL":
@@ -601,6 +628,7 @@ def startup_jobs():
     data = load_db()
     for uid_str, d in data.items():
         if d.get("status") == "running":
+            print(f"[startup] {uid_str} uchun job tiklanmoqda...")
             setup_job(int(uid_str))
 
 if __name__ == "__main__":
