@@ -16,6 +16,9 @@ from db import update_user, get_user, load_db
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
+SESSIONS_DIR = "sessions"
+os.makedirs(SESSIONS_DIR, exist_ok=True)
+
 bot = Client("bot_session", api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN)
 scheduler = AsyncIOScheduler()
 
@@ -58,8 +61,11 @@ def confirm_logout_inline():
 
 # ── Yordamchi funksiyalar ─────────────────────────────────────────────────────
 
+def session_path(user_id):
+    return os.path.join(SESSIONS_DIR, f"session_{user_id}")
+
 def is_logged_in(user_id):
-    return os.path.exists(f"session_{user_id}.session")
+    return os.path.exists(f"{session_path(user_id)}.session")
 
 async def get_or_create_client(user_id):
     if user_id in user_clients:
@@ -70,10 +76,10 @@ async def get_or_create_client(user_id):
         except Exception:
             del user_clients[user_id]
 
-    session_name = f"session_{user_id}"
-    if os.path.exists(f"{session_name}.session"):
+    path = session_path(user_id)
+    if os.path.exists(f"{path}.session"):
         try:
-            client = Client(session_name, config.API_ID, config.API_HASH)
+            client = Client(path, config.API_ID, config.API_HASH)
             await client.connect()
             user_clients[user_id] = client
             return client
@@ -195,7 +201,7 @@ async def message_handler(client, message):
 
         await message.reply_text("⏳ Kod yuborilmoqda...", reply_markup=cancel_menu())
         try:
-            user_client = Client(f"session_{chat_id}", config.API_ID, config.API_HASH)
+            user_client = Client(session_path(chat_id), config.API_ID, config.API_HASH)
             await user_client.connect()
             sent_code = await user_client.send_code(phone)
             user_states[chat_id] = {
@@ -415,9 +421,11 @@ async def callback_handler(client, callback_query):
             del user_clients[chat_id]
 
         # Session faylini o'chiramiz
-        session_file = f"session_{chat_id}.session"
-        if os.path.exists(session_file):
-            os.remove(session_file)
+        session_file = f"{session_path(chat_id)}.session"
+        journal_file = f"{session_path(chat_id)}.session-journal"
+        for f in [session_file, journal_file]:
+            if os.path.exists(f):
+                os.remove(f)
 
         # Jobni to'xtatamiz
         job_id = f"job_{chat_id}"
