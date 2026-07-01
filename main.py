@@ -236,20 +236,27 @@ async def send_messages(uid):
     for g in groups:
         try:
             if has_media and media_src:
-                if "PHOTO" in media_type.upper():
-                    await client.send_photo(g, media_src, caption=text or None)
-                elif "VIDEO" in media_type.upper():
-                    await client.send_video(g, media_src, caption=text or None)
-                elif "AUDIO" in media_type.upper():
-                    await client.send_audio(g, media_src, caption=text or None)
-                elif "VOICE" in media_type.upper():
-                    await client.send_voice(g, media_src, caption=text or None)
-                elif "STICKER" in media_type.upper():
-                    await client.send_sticker(g, media_src)
-                elif "ANIMATION" in media_type.upper():
-                    await client.send_animation(g, media_src, caption=text or None)
-                else:
-                    await client.send_document(g, media_src, caption=text or None)
+                mt = media_type.upper()
+                # Fayl disk da bo'lsa open() bilan, aks holda file_id
+                src = open(media_src, "rb") if (file_path and os.path.exists(str(file_path))) else media_src
+                try:
+                    if "PHOTO" in mt:
+                        await client.send_photo(g, src, caption=text or None)
+                    elif "VIDEO" in mt:
+                        await client.send_video(g, src, caption=text or None)
+                    elif "AUDIO" in mt:
+                        await client.send_audio(g, src, caption=text or None)
+                    elif "VOICE" in mt:
+                        await client.send_voice(g, src, caption=text or None)
+                    elif "STICKER" in mt:
+                        await client.send_sticker(g, src)
+                    elif "ANIMATION" in mt or "GIF" in mt:
+                        await client.send_animation(g, src, caption=text or None)
+                    else:
+                        await client.send_document(g, src, caption=text or None)
+                finally:
+                    if hasattr(src, "close"):
+                        src.close()
             elif text:
                 await client.send_message(g, text)
             ok += 1
