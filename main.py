@@ -174,7 +174,7 @@ async def fetch_groups(user_client):
     return groups
 
 async def save_folder(user_client, group_ids):
-    """Tanlangan guruhlarni jildga saqlaydi, xavfsiz limit bilan"""
+    """Tanlangan guruhlarni jildga saqlaydi"""
     async def resolve(g):
         try:
             return await user_client.resolve_peer(g)
@@ -184,25 +184,21 @@ async def save_folder(user_client, group_ids):
     results = await asyncio.gather(*[resolve(g) for g in group_ids])
     peers = [p for p in results if p is not None]
 
-    # Ishlaydigon maksimal sonni topamiz (ikkilik qidiruv)
-    lo, hi = 1, len(peers)
-    last_ok = 0
-    while lo <= hi:
-        mid = (lo + hi) // 2
+    # 50 tadan kamaytira borib ishlaydiganini topamiz
+    limit = min(len(peers), 100)
+    while limit > 0:
         try:
             await user_client.invoke(UpdateDialogFilter(
                 id=10,
                 filter=DialogFilter(
                     id=10, title="Avto Habar Guruhlar",
-                    pinned_peers=[], include_peers=peers[:mid], exclude_peers=[]
+                    pinned_peers=[], include_peers=peers[:limit], exclude_peers=[]
                 )
             ))
-            last_ok = mid
-            lo = mid + 1
+            return limit
         except Exception:
-            hi = mid - 1
-
-    return last_ok
+            limit -= 10
+    return 0
 
 async def send_auto_message(user_id):
     user_data = get_user(user_id)
@@ -563,11 +559,20 @@ async def callback_handler(client, callback_query):
         try:
             saved = await save_folder(user_client, selected)
             update_user(chat_id, groups=selected)
-            note = f"\n_(Jildga {saved} ta, limit: {MAX_FOLDER_PEERS})_" if len(selected) > saved else ""
-            await callback_query.message.edit_text(
-                f"✅ {len(selected)} ta guruh saqlandi!{note}",
-                parse_mode=ParseMode.MARKDOWN
-            )
+            if saved == 0:
+                await callback_query.message.edit_text(
+                    f"✅ {len(selected)} ta guruh bazaga saqlandi!\n"
+                    f"_(Jildga qo'shilmadi — Telegram limiti)_",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            elif saved < len(selected):
+                await callback_query.message.edit_text(
+                    f"✅ {len(selected)} ta guruh bazaga saqlandi!\n"
+                    f"_(Jildga {saved} ta qo'shildi, qolganlari xabar yuborishda ishlaydi)_",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                await callback_query.message.edit_text(f"✅ {len(selected)} ta guruh saqlandi va jildga qo'shildi!")
         except Exception as e:
             await callback_query.message.edit_text(f"❌ Jild yaratishda xatolik: {e}")
         await callback_query.answer()
