@@ -21,13 +21,14 @@ if [ -f bot.pid ]; then
         echo "Bot (PID: $PID) allaqachon to'xtatilgan yoki topilmadi."
     fi
     
-    # pid faylni o'chirish
-    rm bot.pid
+    rm -f bot.pid
 else
-    echo "bot.pid fayli topilmadi. Bot ishlayotganiga ishonch hosil qiling."
-    # Ehtiyot shart sifatida main.py qidirib to'xtatish
-    pkill -f "python3 main.py"
+    echo "bot.pid fayli topilmadi. Jarayon qidirilmoqda..."
+    SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/main.py"
+    pkill -f "$SCRIPT_PATH"
     if [ $? -eq 0 ]; then
-        echo "Orqa fondagi barcha bot jarayonlari topildi va to'xtatildi."
+        echo "Bot jarayoni topildi va to'xtatildi."
+    else
+        echo "Ishlab turgan bot jarayoni topilmadi."
     fi
 fi
