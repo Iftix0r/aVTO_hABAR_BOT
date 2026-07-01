@@ -101,6 +101,7 @@ async def get_client(uid):
         try:
             if not user_clients[uid].is_connected:
                 await user_clients[uid].connect()
+            await user_clients[uid].get_me()  # sessiyani isitish
             return user_clients[uid]
         except Exception:
             del user_clients[uid]
@@ -109,6 +110,7 @@ async def get_client(uid):
         try:
             c = Client(path, config.API_ID, config.API_HASH)
             await c.connect()
+            await c.get_me()  # sessiyani isitish
             user_clients[uid] = c
             return c
         except Exception:
