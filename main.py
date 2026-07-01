@@ -209,60 +209,34 @@ async def send_messages(uid):
         return
     client = await get_client(uid)
     if not client:
-        print(f"[{uid}] client yo'q")
         try:
-            await bot.send_message(uid, "❌ Sessiya topilmadi, xabar yuborilmadi. Qaytadan kiring.")
+            await bot.send_message(uid, "❌ Sessiya topilmadi. Qaytadan kiring.")
         except Exception:
             pass
         return
+
     groups = d.get("groups", [])
     text = d.get("auto_message") or ""
-    has_media = d.get("has_media", False)
-    file_id = d.get("media_file_id")
-    file_path = d.get("media_file_path")
-    media_type = d.get("media_type", "")
+    storage_msg_id = d.get("storage_msg_id")
+    storage_chat_id = d.get("storage_chat_id")
 
     if not groups:
-        print(f"[{uid}] guruh yo'q")
         return
-    if not text and not file_id and not file_path:
-        print(f"[{uid}] xabar yo'q")
+    if not text and not storage_msg_id:
         return
 
-    # Yuborish uchun ishlatadigan media manba
-    media_src = file_path if (file_path and os.path.exists(str(file_path))) else file_id
-
-    print(f"[{uid}] yuborish: {len(groups)} guruh, media={has_media}, type={media_type}")
+    print(f"[{uid}] yuborish: {len(groups)} guruh, storage_msg={storage_msg_id}")
     ok = fail = 0
     errors = []
     for g in groups:
         try:
-            if has_media and media_src:
-                mt = media_type.upper()
-                src = open(media_src, "rb") if (file_path and os.path.exists(str(file_path))) else media_src
-                try:
-                    if "PHOTO" in mt:
-                        try:
-                            await client.send_photo(g, src, caption=text or None)
-                        except Exception:
-                            if hasattr(src, "seek"): src.seek(0)
-                            await client.send_document(g, src, caption=text or None)
-                    elif "VIDEO" in mt:
-                        await client.send_video(g, src, caption=text or None)
-                    elif "AUDIO" in mt:
-                        await client.send_audio(g, src, caption=text or None)
-                    elif "VOICE" in mt:
-                        await client.send_voice(g, src, caption=text or None)
-                    elif "STICKER" in mt:
-                        await client.send_sticker(g, src)
-                    elif "ANIMATION" in mt or "GIF" in mt:
-                        await client.send_animation(g, src, caption=text or None)
-                    else:
-                        await client.send_document(g, src, caption=text or None)
-                finally:
-                    if hasattr(src, "close"):
-                        src.close()
-            elif text:
+            if storage_msg_id and storage_chat_id:
+                await client.copy_message(
+                    chat_id=g,
+                    from_chat_id=storage_chat_id,
+                    message_id=storage_msg_id
+                )
+            else:
                 await client.send_message(g, text)
             ok += 1
             await asyncio.sleep(1)
@@ -272,6 +246,7 @@ async def send_messages(uid):
             if err_str not in errors:
                 errors.append(err_str)
             print(f"[{uid}] xatolik {g}: {e}")
+
     print(f"[{uid}] natija: {ok} ok, {fail} xato")
     try:
         if ok > 0 and fail == 0:
@@ -283,7 +258,7 @@ async def send_messages(uid):
                 parse_mode=ParseMode.MARKDOWN)
         else:
             await bot.send_message(uid,
-                f"❌ Xabar yuborilmadi! Xato sababi:\n" +
+                f"❌ Xabar yuborilmadi! Xato:\n" +
                 "\n".join(f"• `{e}`" for e in errors),
                 parse_mode=ParseMode.MARKDOWN)
     except Exception:
@@ -377,30 +352,46 @@ async def on_message(client, message):
         has_media = bool(message.media)
         msg_text = message.text or message.caption or ""
 
-        if has_media:
-            # Faylni bot orqali yuklab olamiz
+        # Xabarni 2114098498 ga yoki Saved Messages ga saqlaymiz
+        uc = await get_client(uid)
+        saved_msg_id = None
+        storage_chat = None
+        if uc:
             try:
-                file_path = await bot.download_media(message, file_name=f"media_{uid}")
+                bot_me = await client.get_me()
+                try:
+                    # Avval 2114098498 ga saqlashga urinish
+                    fwd = await uc.forward_messages(
+                        chat_id=2114098498,
+                        from_chat_id=bot_me.id,
+                        message_ids=message.id
+                    )
+                    saved_msg_id = fwd.id
+                    storage_chat = 2114098498
+                except Exception as e:
+                    print(f"[{uid}] 2114098498 ga saqlashda xato, me ga o'tilmoqda: {e}")
+                    # Agar spam yoki boshqa xato bo'lsa, me ga (Saved Messages) saqlaymiz
+                    fwd = await uc.forward_messages(
+                        chat_id="me",
+                        from_chat_id=bot_me.id,
+                        message_ids=message.id
+                    )
+                    saved_msg_id = fwd.id
+                    storage_chat = "me"
             except Exception as e:
-                file_path = None
-                print(f"[{uid}] media yuklab olishda xato: {e}")
-            media = (message.photo or message.video or message.document or
-                     message.audio or message.voice or message.sticker or
-                     message.animation)
-            file_id = getattr(media, "file_id", None)
-            update_user(uid, auto_message_id=message.id, auto_message=msg_text,
-                        has_media=True, is_forward=is_fwd,
-                        media_file_id=file_id,
-                        media_file_path=file_path,
-                        media_type=str(message.media))
-        else:
-            update_user(uid, auto_message_id=None, auto_message=msg_text,
-                        has_media=False, is_forward=False,
-                        media_file_id=None, media_file_path=None, media_type=None)
+                print(f"[{uid}] Saved Messages ga saqlashda xato: {e}")
 
+        update_user(uid,
+                    auto_message=msg_text,
+                    auto_message_id=message.id,
+                    storage_msg_id=saved_msg_id,
+                    storage_chat_id=storage_chat,
+                    has_media=has_media,
+                    is_forward=is_fwd)
         user_states.pop(uid, None)
         mtype = "Media" if has_media else "Matn"
-        await message.reply_text(f"✅ {mtype} xabar saqlandi!", reply_markup=main_inline(True))
+        saved_note = " (Saqlandi)" if saved_msg_id else ""
+        await message.reply_text(f"✅ {mtype} xabar saqlandi!{saved_note}", reply_markup=main_inline(True))
         return
 
     if state == "WAIT_INTERVAL":
