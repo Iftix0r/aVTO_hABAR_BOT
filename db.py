@@ -28,6 +28,9 @@ def update_user(user_id, **kwargs):
             "groups": [],
             "interval": 60,
             "auto_message": "",
+            "auto_message_id": None,
+            "has_media": False,
+            "is_forward": False,
             "status": "stopped",
             "folder_id": None
         }

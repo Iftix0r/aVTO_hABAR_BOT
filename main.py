@@ -208,42 +208,47 @@ async def send_auto_message(user_id):
 
     client = await get_or_create_client(user_id)
     if not client:
-        print(f"[{user_id}] Client topilmadi, xabar yuborilmadi")
+        print(f"[{user_id}] Client topilmadi")
+        return
+
+    groups = user_data.get("groups", [])
+    if not groups:
+        print(f"[{user_id}] Guruhlar bo'sh")
         return
 
     message_id = user_data.get("auto_message_id")
-    old_message = user_data.get("auto_message")
-    groups = user_data.get("groups", [])
-
-    print(f"[{user_id}] Yuborish boshlandi: {len(groups)} ta guruh, message_id={message_id}")
-
-    if not groups:
-        print(f"[{user_id}] Guruhlar bo'sh!")
-        return
-    if not message_id and not old_message:
-        print(f"[{user_id}] Xabar yo'q!")
-        return
-
-    bot_id = int(config.BOT_TOKEN.split(":")[0])
+    text = user_data.get("auto_message", "")
+    has_media = user_data.get("has_media", False)
     is_forward = user_data.get("is_forward", False)
+    bot_id = int(config.BOT_TOKEN.split(":")[0])
+
+    if not message_id and not text:
+        print(f"[{user_id}] Xabar yo'q")
+        return
+
+    print(f"[{user_id}] Yuborish: {len(groups)} guruh, media={has_media}, text='{text[:30]}'")
     ok, fail = 0, 0
 
     for g in groups:
         try:
-            if message_id:
+            if has_media and message_id:
+                # Media xabarni forward yoki copy
                 if is_forward:
                     await client.forward_messages(chat_id=g, from_chat_id=bot_id, message_ids=message_id)
                 else:
                     await client.copy_message(chat_id=g, from_chat_id=bot_id, message_id=message_id)
-            else:
-                await client.send_message(g, old_message)
+            elif text:
+                await client.send_message(g, text)
+            elif message_id:
+                # Oxirgi urinish — forward
+                await client.forward_messages(chat_id=g, from_chat_id=bot_id, message_ids=message_id)
             ok += 1
             await asyncio.sleep(1)
         except Exception as e:
             fail += 1
             print(f"[{user_id}] Xatolik {g}: {e}")
 
-    print(f"[{user_id}] Yuborish tugadi: {ok} muvaffaqiyatli, {fail} xato")
+    print(f"[{user_id}] Natija: {ok} ok, {fail} xato")
 
 def setup_job(user_id):
     user_data = get_user(user_id)
@@ -429,10 +434,21 @@ async def message_handler(client, message):
 
     elif state == "WAITING_AUTO_MESSAGE":
         is_forward = True if getattr(message, "forward_date", None) else False
-        update_user(chat_id, auto_message_id=message.id, is_forward=is_forward, auto_message=None)
+        # Xabarni to'liq saqlash: matn, caption, media
+        msg_data = {
+            "message_id": message.id,
+            "is_forward": is_forward,
+            "text": message.text or message.caption or "",
+            "has_media": bool(message.media),
+        }
+        update_user(chat_id,
+                    auto_message_id=message.id,
+                    auto_message=message.text or message.caption or "",
+                    is_forward=is_forward,
+                    has_media=bool(message.media))
         user_states.pop(chat_id, None)
         await message.reply_text(
-            "✅ Xabar saqlandi! (Matn, rasm, video, forward — barchasi qo'llab-quvvatlanadi)",
+            "✅ Xabar saqlandi!",
             reply_markup=main_menu()
         )
         return
