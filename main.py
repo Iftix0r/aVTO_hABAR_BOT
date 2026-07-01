@@ -35,11 +35,11 @@ def main_inline(is_logged=True):
             InlineKeyboardButton("🔐 Hisobga kirish", callback_data="login")
         ]])
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📁 Guruhlarni tanlash", callback_data="open_groups")],
-        [InlineKeyboardButton("✉️ Xabar kiritish", callback_data="set_message"),
-         InlineKeyboardButton("⏱ Interval", callback_data="set_interval")],
-        [InlineKeyboardButton("📊 Holat", callback_data="status")],
-        [InlineKeyboardButton("🚪 Chiqish", callback_data="logout_ask")]
+        [InlineKeyboardButton("📁 1. Guruhlarni tanlash", callback_data="open_groups")],
+        [InlineKeyboardButton("✉️ 2. Xabar kiritish", callback_data="set_message")],
+        [InlineKeyboardButton("⏱ 3. Interval (vaqtni) sozlash", callback_data="set_interval")],
+        [InlineKeyboardButton("📊 4. Holat va Boshlash", callback_data="status")],
+        [InlineKeyboardButton("🚪 Hisobdan chiqish", callback_data="logout_ask")]
     ])
 
 def status_inline(status):
@@ -185,13 +185,18 @@ async def try_save_folder(client, group_ids):
 
 async def status_text(uid):
     d = get_user(uid)
-    st = "🟢 Ishlayapti" if d.get("status") == "running" else "🔴 To'xtatilgan"
+    st = "🟢 **Ishlayapti** (Tarqatilmoqda)" if d.get("status") == "running" else "🔴 **To'xtatilgan**"
     has_msg = bool(d.get("auto_message") or d.get("auto_message_id"))
+    msg_status = "✅ Kiritilgan" if has_msg else "❌ Kiritilmagan"
+    groups_count = len(d.get("groups", []))
+    interval = d.get("interval", 60)
     return (
-        f"📊 **Holat:** {st}\n"
-        f"👥 **Guruhlar:** {len(d.get('groups', []))} ta\n"
-        f"⏱ **Interval:** {d.get('interval', 60)} daqiqa\n"
-        f"✉️ **Xabar:** {'✅' if has_msg else '❌'}"
+        f"📊 **BOT HOLATI**\n\n"
+        f"⚙️ **Holat:** {st}\n"
+        f"👥 **Tanlangan guruhlar:** {groups_count} ta\n"
+        f"⏱ **Interval:** Har {interval} daqiqada\n"
+        f"✉️ **Xabar:** {msg_status}\n\n"
+        f"💡 _Bot ishlashi uchun xabar kiritilgan bo'lishi va kamida 1 ta guruh tanlanishi shart!_"
     )
 
 def setup_job(uid):
@@ -290,9 +295,27 @@ async def on_message(client, message):
     if text == "/start":
         user_states.pop(uid, None)
         logged = is_logged(uid)
-        await message.reply_text(
+        
+        START_TEXT_LOGGED = (
             "👋 **Avto-Habar Botiga Xush Kelibsiz!**\n\n"
-            + ("Quyidagi tugmalar orqali boshqaring:" if logged else "Boshlash uchun hisobga kiring:"),
+            "Ushbu bot orqali o'z akkauntingizdagi guruhlarga avtomatik xabar tarqata olasiz.\n\n"
+            "**Qanday foydalaniladi?**\n"
+            "1️⃣ **Guruhlarni tanlash:** Qaysi guruhlarga yuborishni belgilang.\n"
+            "2️⃣ **Xabar kiritish:** Tarqatmoqchi bo'lgan xabarni yuboring.\n"
+            "3️⃣ **Interval:** Har qancha daqiqada yuborilishini sozlang (masalan, 30 daqiqa).\n"
+            "4️⃣ **Holat va Boshlash:** Sozlamalar tugagach, shu bo'limdan botni ishga tushiring!\n\n"
+            "👇 *Quyidagi menyudan kerakli amallarni bajaring:*"
+        )
+        
+        START_TEXT_UNLOGGED = (
+            "👋 **Avto-Habar Botiga Xush Kelibsiz!**\n\n"
+            "Bu bot orqali siz o'zingiz a'zo bo'lgan guruhlarga avtomatik tarzda xabar tarqatishingiz mumkin.\n"
+            "Boshlash uchun avval Telegram hisobingizga kirishingiz kerak.\n\n"
+            "👇 **'Hisobga kirish'** tugmasini bosing:"
+        )
+
+        await message.reply_text(
+            START_TEXT_LOGGED if logged else START_TEXT_UNLOGGED,
             reply_markup=main_inline(logged),
             parse_mode=ParseMode.MARKDOWN
         )
@@ -454,9 +477,19 @@ async def on_callback(client, cq):
 
     if data == "main_menu":
         logged = is_logged(uid)
+        START_TEXT_LOGGED = (
+            "👋 **Avto-Habar Botiga Xush Kelibsiz!**\n\n"
+            "**Qanday foydalaniladi?**\n"
+            "1️⃣ **Guruhlarni tanlash:** Qaysi guruhlarga yuborishni belgilang.\n"
+            "2️⃣ **Xabar kiritish:** Tarqatmoqchi bo'lgan xabarni yuboring.\n"
+            "3️⃣ **Interval:** Har qancha daqiqada yuborilishini sozlang.\n"
+            "4️⃣ **Holat va Boshlash:** Botni shu bo'limdan ishga tushiring!\n\n"
+            "👇 *Quyidagi menyudan kerakli amallarni bajaring:*"
+        )
+        START_TEXT_UNLOGGED = "Boshlash uchun hisobga kiring:"
+        
         await edit(
-            "👋 **Avto-Habar Bot**\n\nQuyidagi tugmalar orqali boshqaring:" if logged
-            else "Boshlash uchun hisobga kiring:",
+            START_TEXT_LOGGED if logged else START_TEXT_UNLOGGED,
             main_inline(logged)
         )
         await cq.answer()
@@ -513,7 +546,7 @@ async def on_callback(client, cq):
     if data == "set_interval":
         d = get_user(uid)
         user_states[uid] = {"state": "WAIT_INTERVAL"}
-        await edit(f"⏱ Hozirgi interval: **{d.get('interval', 60)} daqiqa**\n\nYangi qiymat kiriting:",
+        await edit(f"⏱ Hozirgi interval: **{d.get('interval', 60)} daqiqa**\n\nYangi qiymat kiriting (masalan, 30, 60 yoki 120):",
                    cancel_inline())
         await cq.answer()
         return
@@ -601,7 +634,10 @@ async def on_callback(client, cq):
         user_states[uid] = {"state": "SEL_GROUPS", "all": all_groups,
                              "sel": selected, "page": 0}
         await edit(
-            f"📋 **Guruhlarni tanlang** ({len(all_groups)} ta)\n✅ tanlangan | ☑️ tanlanmagan",
+            f"📋 **Guruhlarni tanlang** ({len(all_groups)} ta)\n\n"
+            f"✅ – Tanlangan guruhlar\n"
+            f"☑️ – Tanlanmagan guruhlar\n\n"
+            f"❗️ _Kerakli guruhlarni tanlab bo'lgach, albatta '💾 Saqlash' tugmasini bosing!_",
             groups_inline(all_groups, selected, 0)
         )
         await cq.answer()
