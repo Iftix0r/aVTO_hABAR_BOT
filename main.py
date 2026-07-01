@@ -240,6 +240,13 @@ async def send_messages(uid):
             fail += 1
             print(f"[{uid}] xatolik {g}: {e}")
     print(f"[{uid}] natija: {ok} ok, {fail} xato")
+    try:
+        if ok > 0:
+            await bot.send_message(uid, f"✅ Xabar {ok} ta guruhga yuborildi!" + (f" ({fail} ta xato)" if fail else ""))
+        else:
+            await bot.send_message(uid, f"❌ Xabar yuborilmadi! {fail} ta guruhda xato.")
+    except Exception:
+        pass
 
 # ── /start va xabar handleri ──────────────────────────────────────────────────
 
