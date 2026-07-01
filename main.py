@@ -232,10 +232,24 @@ async def send_messages(uid):
         return
 
     print(f"[{uid}] yuborish: {len(groups)} guruh, storage_msg={storage_msg_id}")
-    ok = fail = 0
+    ok = fail = skipped = 0
     errors = []
     for g in groups:
         try:
+            # Ketma-ket xabar yubormaslik (anti-spam) tekshiruvi:
+            is_last_mine = False
+            try:
+                async for m in client.get_chat_history(g, limit=1):
+                    if m.outgoing:
+                        is_last_mine = True
+                    break
+            except Exception:
+                pass # Tarixni o'qib bo'lmasa e'tibor bermaymiz
+            
+            if is_last_mine:
+                skipped += 1
+                continue
+
             if storage_msg_id and storage_chat_id:
                 await client.copy_message(
                     chat_id=g,
@@ -268,18 +282,21 @@ async def send_messages(uid):
                 errors.append(err_str)
             print(f"[{uid}] xatolik {g}: {e}")
 
-    print(f"[{uid}] natija: {ok} ok, {fail} xato")
+    print(f"[{uid}] natija: {ok} ok, {fail} xato, {skipped} o'tkazib yuborildi")
     try:
+        skip_msg = f"\n⚠️ _Ketma-ket yozmaslik uchun {skipped} ta guruhga yuborilmadi (oxirgi xabar o'zingizniki)._" if skipped > 0 else ""
+        
         if ok > 0 and fail == 0:
-            await bot.send_message(uid, f"✅ Xabar {ok} ta guruhga yuborildi!")
-        elif ok > 0:
+            await bot.send_message(uid, f"✅ Xabar {ok} ta guruhga yuborildi!{skip_msg}", parse_mode=ParseMode.MARKDOWN)
+        elif ok > 0 or skipped > 0:
             await bot.send_message(uid,
-                f"✅ {ok} ta guruhga yuborildi, {fail} ta xato:\n" +
-                "\n".join(f"• `{e}`" for e in errors),
+                f"📊 **Hisobot:**\n✅ {ok} ta guruhga yuborildi\n❌ {fail} ta xato\n"
+                f"{skip_msg}\n\n" +
+                ("\n".join(f"• `{e}`" for e in errors) if errors else ""),
                 parse_mode=ParseMode.MARKDOWN)
         else:
             await bot.send_message(uid,
-                f"❌ Xabar yuborilmadi! Xato:\n" +
+                f"❌ Xabar hech qaysi guruhga yuborilmadi!\n" +
                 "\n".join(f"• `{e}`" for e in errors),
                 parse_mode=ParseMode.MARKDOWN)
     except Exception:
