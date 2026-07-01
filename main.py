@@ -507,6 +507,8 @@ async def on_callback(client, cq):
         setup_job(uid)
         await edit(await status_text(uid), status_inline("running"))
         await cq.answer("✅ Boshlandi!")
+        # Darhol bir marta yuborish
+        asyncio.get_event_loop().create_task(send_messages(uid))
         return
 
     if data == "stop":
