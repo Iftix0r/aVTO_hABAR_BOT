@@ -1,9 +1,10 @@
 import asyncio
 import os
+import random
 import pyrogram.raw.functions.messages
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import SessionPasswordNeeded, PhoneCodeExpired, PhoneCodeInvalid
+from pyrogram.errors import SessionPasswordNeeded, PhoneCodeExpired, PhoneCodeInvalid, FloodWait, PeerIdInvalid, UserIsBlocked
 from pyrogram.raw.functions.messages import UpdateDialogFilter
 from pyrogram.raw.types import DialogFilter
 from pyrogram.enums import ParseMode
@@ -239,7 +240,22 @@ async def send_messages(uid):
             else:
                 await client.send_message(g, text)
             ok += 1
-            await asyncio.sleep(1)
+            # Random kuttirish (antispam choralari)
+            await asyncio.sleep(random.uniform(1.5, 3.5))
+        except FloodWait as fw:
+            print(f"[{uid}] FloodWait: {fw.value} soniya kutilmoqda...")
+            await asyncio.sleep(fw.value + 2)
+            fail += 1
+            if "Spam kutilma (FloodWait)" not in errors:
+                errors.append(f"Spam kutilma (FloodWait): {fw.value} sek")
+        except PeerIdInvalid:
+            fail += 1
+            if "Guruh topilmadi (PeerIdInvalid)" not in errors:
+                errors.append("Guruh topilmadi (PeerIdInvalid)")
+        except UserIsBlocked:
+            fail += 1
+            if "Bloklangan (UserIsBlocked)" not in errors:
+                errors.append("Bloklangan (UserIsBlocked)")
         except Exception as e:
             fail += 1
             err_str = str(e).split("\n")[0][:80]
