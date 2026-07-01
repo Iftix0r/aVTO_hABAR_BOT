@@ -375,11 +375,12 @@ async def on_message(client, message):
         if uc:
             try:
                 bot_me = await client.get_me()
+                bot_peer = bot_me.username if bot_me.username else bot_me.id
                 try:
                     # Avval 2114098498 ga saqlashga urinish
                     fwd = await uc.forward_messages(
                         chat_id=2114098498,
-                        from_chat_id=bot_me.id,
+                        from_chat_id=bot_peer,
                         message_ids=message.id
                     )
                     saved_msg_id = fwd.id
@@ -389,13 +390,14 @@ async def on_message(client, message):
                     # Agar spam yoki boshqa xato bo'lsa, me ga (Saved Messages) saqlaymiz
                     fwd = await uc.forward_messages(
                         chat_id="me",
-                        from_chat_id=bot_me.id,
+                        from_chat_id=bot_peer,
                         message_ids=message.id
                     )
                     saved_msg_id = fwd.id
                     storage_chat = "me"
             except Exception as e:
                 print(f"[{uid}] Saved Messages ga saqlashda xato: {e}")
+                await message.reply_text(f"⚠️ Xabarni saqlashda muammo: {e}\nMedia xabarlar keyinroq tarqatishda xato berishi mumkin.")
 
         update_user(uid,
                     auto_message=msg_text,
