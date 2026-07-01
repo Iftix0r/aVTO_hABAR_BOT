@@ -25,6 +25,9 @@ scheduler = AsyncIOScheduler()
 user_clients = {}
 user_states = {}
 
+MAX_FOLDER_PEERS = 100
+PAGE_SIZE = 8  # bir sahifada nechta guruh
+
 # ── Menyular ──────────────────────────────────────────────────────────────────
 
 def login_menu():
@@ -32,7 +35,7 @@ def login_menu():
 
 def main_menu():
     return ReplyKeyboardMarkup([
-        [KeyboardButton("📁 Guruhlarni yangilash")],
+        [KeyboardButton("📁 Guruhlarni tanlash")],
         [KeyboardButton("✉️ Avto habar"), KeyboardButton("⏱ Vaqtni sozlash")],
         [KeyboardButton("📊 Boshqaruv paneli")],
         [KeyboardButton("🚪 Hisobdan chiqish")]
@@ -44,11 +47,9 @@ def cancel_menu():
 def control_panel_inline(status: str):
     is_running = status == "running"
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🛑 To'xtatish" if is_running else "▶️ Boshlash",
-                                 callback_data="stop" if is_running else "start"),
-        ],
-        [InlineKeyboardButton("🔄 Guruhlarni yangilash", callback_data="refresh_groups")],
+        [InlineKeyboardButton("🛑 To'xtatish" if is_running else "▶️ Boshlash",
+                              callback_data="stop" if is_running else "start")],
+        [InlineKeyboardButton("📁 Guruhlarni tanlash", callback_data="open_groups")],
         [InlineKeyboardButton("🗑 Xabarni o'chirish", callback_data="clear_message")],
         [InlineKeyboardButton("❌ Yopish", callback_data="close_panel")]
     ])
@@ -58,6 +59,34 @@ def confirm_logout_inline():
         InlineKeyboardButton("✅ Ha, chiqish", callback_data="confirm_logout"),
         InlineKeyboardButton("❌ Bekor", callback_data="close_panel")
     ]])
+
+def groups_page_inline(all_groups, selected_ids, page=0):
+    """Guruhlar sahifasi — checkbox ko'rinishida"""
+    start = page * PAGE_SIZE
+    end = start + PAGE_SIZE
+    page_groups = all_groups[start:end]
+    total_pages = (len(all_groups) + PAGE_SIZE - 1) // PAGE_SIZE
+
+    rows = []
+    for gid, gname in page_groups:
+        check = "✅" if gid in selected_ids else "☑️"
+        title = gname[:28] if len(gname) > 28 else gname
+        rows.append([InlineKeyboardButton(f"{check} {title}", callback_data=f"gtoggle_{gid}")])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"gpage_{page-1}"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="gnoop"))
+    if end < len(all_groups):
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"gpage_{page+1}"))
+    if nav:
+        rows.append(nav)
+
+    rows.append([
+        InlineKeyboardButton(f"✅ Saqlash ({len(selected_ids)} ta)", callback_data="gsave"),
+        InlineKeyboardButton("❌ Bekor", callback_data="gcancel")
+    ])
+    return InlineKeyboardMarkup(rows)
 
 # ── Yordamchi funksiyalar ─────────────────────────────────────────────────────
 
@@ -87,22 +116,18 @@ async def get_or_create_client(user_id):
             return None
     return None
 
-MAX_FOLDER_PEERS = 100
-
 async def fetch_groups(user_client):
-    """Barcha guruhlarni to'liq yuklab oladi"""
+    """(id, name) juftliklari ro'yxatini qaytaradi"""
     groups = []
-    count = 0
     async for d in user_client.get_dialogs():
-        count += 1
         if str(d.chat.type) in ["ChatType.GROUP", "ChatType.SUPERGROUP"]:
-            groups.append(d.chat.id)
-    return groups, count
+            groups.append((d.chat.id, d.chat.title or str(d.chat.id)))
+    return groups
 
-async def save_folder(user_client, groups):
-    """Guruhlarni jildga saqlaydi, 100 ta limit bilan"""
-    limited = groups[:MAX_FOLDER_PEERS]
-    
+async def save_folder(user_client, group_ids):
+    """Tanlangan guruhlarni jildga saqlaydi"""
+    limited = group_ids[:MAX_FOLDER_PEERS]
+
     async def resolve(g):
         try:
             return await user_client.resolve_peer(g)
@@ -157,10 +182,8 @@ def setup_job(user_id):
     user_data = get_user(user_id)
     interval_minutes = max(1, int(user_data.get("interval", 60)))
     job_id = f"job_{user_id}"
-
     if scheduler.get_job(job_id):
         scheduler.remove_job(job_id)
-
     if user_data.get("status") == "running":
         scheduler.add_job(send_auto_message, "interval", minutes=interval_minutes,
                           args=[user_id], id=job_id)
@@ -175,13 +198,49 @@ async def build_status_text(user_id):
         msg_type = "Media/Matn ✅"
     elif user_data.get("auto_message"):
         msg_type = "Matn ✅"
-
     return (
         f"📊 **Boshqaruv paneli**\n\n"
         f"**Holat:** {status}\n"
         f"**Guruhlar:** {groups_count} ta\n"
         f"**Interval:** Har {interval} daqiqada\n"
         f"**Xabar:** {msg_type}"
+    )
+
+async def open_group_selector(user_id, target_message):
+    """Guruh tanlash sahifasini ochadi yoki yangilaydi"""
+    user_client = await get_or_create_client(user_id)
+    if not user_client:
+        await target_message.edit_text("❌ Sessiya topilmadi. Qaytadan kiring.")
+        return
+
+    await target_message.edit_text("⏳ Guruhlar yuklanmoqda...")
+    try:
+        all_groups = await fetch_groups(user_client)
+    except Exception as e:
+        await target_message.edit_text(f"❌ Xatolik: {e}")
+        return
+
+    if not all_groups:
+        await target_message.edit_text("❌ Sizda hech qanday guruh topilmadi.")
+        return
+
+    # Avval saqlangan guruhlarni tanlangan deb belgilaymiz
+    saved = set(get_user(user_id).get("groups", []))
+    selected = saved & {gid for gid, _ in all_groups}
+
+    user_states[user_id] = {
+        "state": "SELECTING_GROUPS",
+        "all_groups": all_groups,
+        "selected": selected,
+        "page": 0
+    }
+
+    await target_message.edit_text(
+        f"📋 **Guruhlarni tanlang** ({len(all_groups)} ta topildi)\n"
+        f"✅ — tanlangan, ☑️ — tanlanmagan\n"
+        f"Tugagach **Saqlash** tugmasini bosing:",
+        reply_markup=groups_page_inline(all_groups, selected, 0),
+        parse_mode=ParseMode.MARKDOWN
     )
 
 # ── Xabar handleri ────────────────────────────────────────────────────────────
@@ -191,7 +250,6 @@ async def message_handler(client, message):
     chat_id = message.chat.id
     text = message.text or ""
 
-    # /start
     if text == "/start":
         user_states.pop(chat_id, None)
         logged = is_logged_in(chat_id)
@@ -204,10 +262,8 @@ async def message_handler(client, message):
         )
         return
 
-    # Bekor qilish
     if text == "❌ Bekor qilish":
         state_info = user_states.pop(chat_id, {})
-        # Agar client yaratilgan bo'lsa, disconnect qilamiz
         tmp_client = state_info.get("client")
         if tmp_client:
             try:
@@ -219,7 +275,6 @@ async def message_handler(client, message):
                                  reply_markup=main_menu() if logged else login_menu())
         return
 
-    # State mashinasi
     state_info = user_states.get(chat_id, {})
     state = state_info.get("state")
 
@@ -246,8 +301,7 @@ async def message_handler(client, message):
                 "client": user_client
             }
             await message.reply_text(
-                "📲 Telegramdan kelgan **5 xonali kodni** kiriting:\n"
-                "_(Masalan: `12345`)_",
+                "📲 Telegramdan kelgan **5 xonali kodni** kiriting:\n_(Masalan: `12345`)_",
                 reply_markup=cancel_menu(),
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -278,10 +332,8 @@ async def message_handler(client, message):
             )
         except SessionPasswordNeeded:
             user_states[chat_id]["state"] = "WAITING_PASSWORD"
-            await message.reply_text(
-                "🔐 Ikki bosqichli himoya yoqilgan.\nParolni kiriting:",
-                reply_markup=cancel_menu()
-            )
+            await message.reply_text("🔐 Ikki bosqichli himoya yoqilgan.\nParolni kiriting:",
+                                     reply_markup=cancel_menu())
         except (PhoneCodeInvalid, PhoneCodeExpired):
             await message.reply_text("❌ Kod noto'g'ri yoki muddati o'tgan. Qaytadan urinib ko'ring.",
                                      reply_markup=login_menu())
@@ -302,10 +354,7 @@ async def message_handler(client, message):
             user_clients[chat_id] = user_client
             update_user(chat_id, phone=user_states[chat_id]["phone"])
             user_states.pop(chat_id, None)
-            await message.reply_text(
-                "✅ Hisobga muvaffaqiyatli kirdingiz!",
-                reply_markup=main_menu()
-            )
+            await message.reply_text("✅ Hisobga muvaffaqiyatli kirdingiz!", reply_markup=main_menu())
         except Exception as e:
             await message.reply_text(f"❌ Noto'g'ri parol: {e}", reply_markup=login_menu())
             user_states.pop(chat_id, None)
@@ -347,53 +396,28 @@ async def message_handler(client, message):
             [KeyboardButton("📞 Raqamni yuborish", request_contact=True)],
             [KeyboardButton("❌ Bekor qilish")]
         ], resize_keyboard=True)
-        await message.reply_text(
-            "📱 Telefon raqamingizni kiriting yoki tugma orqali yuboring:",
-            reply_markup=contact_menu
-        )
+        await message.reply_text("📱 Telefon raqamingizni kiriting yoki tugma orqali yuboring:",
+                                 reply_markup=contact_menu)
 
-    elif text == "📁 Guruhlarni yangilash":
+    elif text == "📁 Guruhlarni tanlash":
         user_client = await get_or_create_client(chat_id)
         if not user_client:
             await message.reply_text("❌ Sessiya topilmadi. Qaytadan kiring.", reply_markup=login_menu())
             return
-
-        msg = await message.reply_text("⏳ Guruhlar izlanmoqda...")
-        try:
-            groups, count = await fetch_groups(user_client)
-        except Exception as e:
-            await msg.edit_text(f"❌ Dialoglarni olishda xatolik: {e}")
-            return
-
-        if not groups:
-            await msg.edit_text("❌ Sizda hech qanday guruh topilmadi.")
-            return
-
-        await msg.edit_text(f"⏳ {len(groups)} ta guruh topildi, jildga qo'shilmoqda...")
-        try:
-            saved = await save_folder(user_client, groups)
-            update_user(chat_id, groups=groups)
-            note = f"\n_(Jildga {saved} ta qo'shildi, limit: {MAX_FOLDER_PEERS})_" if len(groups) > MAX_FOLDER_PEERS else ""
-            await msg.edit_text(
-                f"✅ {len(groups)} ta guruh saqlandi!{note}",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        except Exception as e:
-            await msg.edit_text(f"❌ Jild yaratishda xatolik: {e}")
+        msg = await message.reply_text("⏳ Yuklanmoqda...")
+        await open_group_selector(chat_id, msg)
 
     elif text == "✉️ Avto habar":
         user_states[chat_id] = {"state": "WAITING_AUTO_MESSAGE"}
         await message.reply_text(
-            "📨 Guruhlarga yuboriladigan xabarni yuboring:\n"
-            "_(Matn, rasm, video yoki forward qilish mumkin)_",
+            "📨 Guruhlarga yuboriladigan xabarni yuboring:\n_(Matn, rasm, video yoki forward)_",
             reply_markup=cancel_menu(),
             parse_mode=ParseMode.MARKDOWN
         )
 
     elif text == "⏱ Vaqtni sozlash":
         user_states[chat_id] = {"state": "WAITING_INTERVAL"}
-        user_data = get_user(chat_id)
-        current = user_data.get("interval", 60)
+        current = get_user(chat_id).get("interval", 60)
         await message.reply_text(
             f"⏱ Hozirgi interval: **{current} daqiqa**\n\nYangi intervalini daqiqalarda kiriting:",
             reply_markup=cancel_menu(),
@@ -402,9 +426,8 @@ async def message_handler(client, message):
 
     elif text == "📊 Boshqaruv paneli":
         user_data = get_user(chat_id)
-        status_text = await build_status_text(chat_id)
         await message.reply_text(
-            status_text,
+            await build_status_text(chat_id),
             reply_markup=control_panel_inline(user_data.get("status", "stopped")),
             parse_mode=ParseMode.MARKDOWN
         )
@@ -422,12 +445,90 @@ async def callback_handler(client, callback_query):
     chat_id = callback_query.from_user.id
     data = callback_query.data
 
+    # ── Guruh tanlash callbacklari ────────────────────────────────────────────
+
+    if data == "open_groups":
+        await open_group_selector(chat_id, callback_query.message)
+        await callback_query.answer()
+        return
+
+    if data.startswith("gtoggle_"):
+        state_info = user_states.get(chat_id, {})
+        if state_info.get("state") != "SELECTING_GROUPS":
+            await callback_query.answer("Sessiya tugagan. Qaytadan oching.", show_alert=True)
+            return
+        gid = int(data.split("_", 1)[1])
+        selected = state_info["selected"]
+        if gid in selected:
+            selected.discard(gid)
+        else:
+            if len(selected) >= MAX_FOLDER_PEERS:
+                await callback_query.answer(f"❌ Maksimum {MAX_FOLDER_PEERS} ta tanlash mumkin!", show_alert=True)
+                return
+            selected.add(gid)
+        await callback_query.message.edit_reply_markup(
+            reply_markup=groups_page_inline(state_info["all_groups"], selected, state_info["page"])
+        )
+        await callback_query.answer()
+        return
+
+    if data.startswith("gpage_"):
+        state_info = user_states.get(chat_id, {})
+        if state_info.get("state") != "SELECTING_GROUPS":
+            await callback_query.answer()
+            return
+        page = int(data.split("_", 1)[1])
+        state_info["page"] = page
+        await callback_query.message.edit_reply_markup(
+            reply_markup=groups_page_inline(state_info["all_groups"], state_info["selected"], page)
+        )
+        await callback_query.answer()
+        return
+
+    if data == "gnoop":
+        await callback_query.answer()
+        return
+
+    if data == "gsave":
+        state_info = user_states.pop(chat_id, {})
+        if state_info.get("state") != "SELECTING_GROUPS":
+            await callback_query.answer("Sessiya tugagan.", show_alert=True)
+            return
+
+        selected = list(state_info["selected"])
+        if not selected:
+            await callback_query.answer("❌ Hech bo'lmaganda 1 ta guruh tanlang!", show_alert=True)
+            user_states[chat_id] = state_info  # qaytaramiz
+            return
+
+        user_client = await get_or_create_client(chat_id)
+        await callback_query.message.edit_text(f"⏳ {len(selected)} ta guruh jildga qo'shilmoqda...")
+        try:
+            saved = await save_folder(user_client, selected)
+            update_user(chat_id, groups=selected)
+            note = f"\n_(Jildga {saved} ta, limit: {MAX_FOLDER_PEERS})_" if len(selected) > saved else ""
+            await callback_query.message.edit_text(
+                f"✅ {len(selected)} ta guruh saqlandi!{note}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            await callback_query.message.edit_text(f"❌ Jild yaratishda xatolik: {e}")
+        await callback_query.answer()
+        return
+
+    if data == "gcancel":
+        user_states.pop(chat_id, None)
+        await callback_query.message.delete()
+        await callback_query.answer("Bekor qilindi.")
+        return
+
+    # ── Boshqaruv paneli callbacklari ─────────────────────────────────────────
+
     if data == "close_panel":
         await callback_query.message.delete()
         return
 
     if data == "confirm_logout":
-        # Clientni disconnect qilamiz
         if chat_id in user_clients:
             try:
                 await user_clients[chat_id].disconnect()
@@ -435,14 +536,11 @@ async def callback_handler(client, callback_query):
                 pass
             del user_clients[chat_id]
 
-        # Session faylini o'chiramiz
-        session_file = f"{session_path(chat_id)}.session"
-        journal_file = f"{session_path(chat_id)}.session-journal"
-        for f in [session_file, journal_file]:
+        for ext in [".session", ".session-journal"]:
+            f = session_path(chat_id) + ext
             if os.path.exists(f):
                 os.remove(f)
 
-        # Jobni to'xtatamiz
         job_id = f"job_{chat_id}"
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
@@ -458,16 +556,15 @@ async def callback_handler(client, callback_query):
     if data == "start":
         user_data = get_user(chat_id)
         if not user_data.get("groups"):
-            await callback_query.answer("❌ Avval guruhlarni yangilang!", show_alert=True)
+            await callback_query.answer("❌ Avval guruhlarni tanlang!", show_alert=True)
             return
         if not user_data.get("auto_message_id") and not user_data.get("auto_message"):
             await callback_query.answer("❌ Avval xabar kiriting!", show_alert=True)
             return
         update_user(chat_id, status="running")
         setup_job(chat_id)
-        status_text = await build_status_text(chat_id)
         await callback_query.message.edit_text(
-            status_text,
+            await build_status_text(chat_id),
             reply_markup=control_panel_inline("running"),
             parse_mode=ParseMode.MARKDOWN
         )
@@ -479,53 +576,19 @@ async def callback_handler(client, callback_query):
         job_id = f"job_{chat_id}"
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
-        status_text = await build_status_text(chat_id)
         await callback_query.message.edit_text(
-            status_text,
+            await build_status_text(chat_id),
             reply_markup=control_panel_inline("stopped"),
             parse_mode=ParseMode.MARKDOWN
         )
         await callback_query.answer("🛑 To'xtatildi!")
         return
 
-    if data == "refresh_groups":
-        user_client = await get_or_create_client(chat_id)
-        if not user_client:
-            await callback_query.answer("❌ Sessiya topilmadi!", show_alert=True)
-            return
-        await callback_query.answer("⏳ Yangilanmoqda...")
-        try:
-            groups, _ = await fetch_groups(user_client)
-        except Exception as e:
-            await callback_query.answer(f"❌ Xatolik: {e}", show_alert=True)
-            return
-
-        if not groups:
-            await callback_query.answer("❌ Guruh topilmadi!", show_alert=True)
-            return
-
-        try:
-            await save_folder(user_client, groups)
-            update_user(chat_id, groups=groups)
-        except Exception:
-            pass
-
-        status_text = await build_status_text(chat_id)
-        user_data = get_user(chat_id)
-        note = f"\n_(Jildga {MAX_FOLDER_PEERS} ta, hammasi: {len(groups)} ta)_" if len(groups) > MAX_FOLDER_PEERS else ""
-        await callback_query.message.edit_text(
-            status_text + f"\n\n✅ {len(groups)} ta guruh yangilandi!{note}",
-            reply_markup=control_panel_inline(user_data.get("status", "stopped")),
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
-
     if data == "clear_message":
         update_user(chat_id, auto_message_id=None, auto_message=None, is_forward=False)
-        status_text = await build_status_text(chat_id)
         user_data = get_user(chat_id)
         await callback_query.message.edit_text(
-            status_text,
+            await build_status_text(chat_id),
             reply_markup=control_panel_inline(user_data.get("status", "stopped")),
             parse_mode=ParseMode.MARKDOWN
         )
